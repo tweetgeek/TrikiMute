@@ -42,10 +42,19 @@ _W kodzie_: `hold` (np. `ButtonEvent.hold`)
 ### Rozmowa
 
 **Cel**:
-Karta przeglądarki, w której aplikacja wykonuje akcje — ta, w której znaleziono
-przycisk mikrofonu. W danej chwili istnieje najwyżej jeden Cel.
+Karta przeglądarki wybrana przez aplikację spośród kart z rozmową — ta, w której
+wykonuje akcje. Kart z rozmową może być w danej chwili kilka, także w różnych
+przeglądarkach i w różnych ich instancjach; Celem jest zawsze najwyżej jedna
+z nich.
 _Unikaj_: karta Meet, zakładka, target
 _W kodzie_: `target` (np. `AppState.target`, `ProbeResult`)
+
+**Instancja**:
+Osobny proces przeglądarki, z własnym katalogiem danych. Jedna przeglądarka może
+mieć ich kilka naraz — narzędzia automatyzujące uruchamiają własne — a każda widzi
+wyłącznie swoje karty. Profile to co innego: kilka profili dzieli jedną Instancję.
+_Unikaj_: profil, okno przeglądarki, proces
+_W kodzie_: `instance` (np. `BrowserInstance`)
 
 **Gotowość**:
 Stan, w którym istnieje jednocześnie uzbrojony Kapsel i Cel. Tylko wtedy

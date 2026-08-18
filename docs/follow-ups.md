@@ -135,12 +135,35 @@ odtwarzania. Działa, ale akurat ten kanał nie powinien móc zawieść bezgło�
 
 ## Znane ograniczenia, nie usterki
 
-**Dwie karty Meet naraz.** Skrypt wybiera **pierwszą** kartę z adresem
-`meet.google.com` i nie próbuje kolejnych w tej samej przeglądarce. Przy karcie
-poczekalni otwartej obok trwającej rozmowy może więc trafić w poczekalnię, bo
-ta też ma przyciski `data-is-muted`. Kolejność kart (najpierw okno na wierzchu)
-sprawia, że zwykle trafia dobrze. Niezawodne rozpoznanie „czy ta karta jest
-w rozmowie" nie jest oczywiste, stąd decyzja o udokumentowaniu zamiast naprawy.
+**Dwie karty Meet naraz.** Skrypt wybiera **pierwszą kartę z kompletem
+przycisków** i na niej poprzestaje. Wcześniejsza wersja tego wpisu twierdziła, że
+wybiera pierwszą kartę z adresem `meet.google.com` i nie próbuje kolejnych — to
+nieprawda: karta, która zwróci `NONE`, jest pomijana i szukanie idzie dalej.
+Wniosek zostaje ten sam, bo poczekalnia też ma przyciski `data-is-muted`, więc
+otwarta obok trwającej rozmowy wygrywa, jeśli trafi się wcześniej. Kolejność kart
+(najpierw okno na wierzchu) sprawia, że zwykle trafia dobrze. Niezawodne
+rozpoznanie „czy ta karta jest w rozmowie" nie jest oczywiste, stąd decyzja
+o udokumentowaniu zamiast naprawy.
+
+Zasięg tego ograniczenia rośnie wraz z przejściem na adresowanie po procesie
+(ADR-0003): kandydatów szukamy odtąd we wszystkich instancjach przeglądarek,
+a nie tylko w tych, które wybrał system, więc szansa natknięcia się na cudzą
+poczekalnię przed własną rozmową jest większa niż była.
+
+**Ścieżka zapasowa może kliknąć w niewłaściwej instancji.** Po przejściu na
+adresowanie po procesie (ADR-0003) AppleScript zostaje jako zapas przy awarii
+ScriptingBridge — a z definicji nie potrafi wskazać instancji. Gdy rozmowa toczy
+się w dwóch instancjach naraz, zapas kliknie w tej, którą wybrał system:
+użytkownik usłyszy dźwięk sukcesu i uzna się za wyciszonego, nie będąc nim. To
+jedyne miejsce w aplikacji, gdzie Akcja może zameldować sukces, wykonawszy się
+nie tam, gdzie trzeba.
+
+Rozważana była wersja ostrożniejsza — zapas czynny wyłącznie przy dokładnie
+jednej instancji danej przeglądarki, bo wtedy nie ma jak trafić źle. Odrzucona
+świadomie na rzecz prostoty kodu i testów. Warunek jest wąski (awaria pierwszej
+ścieżki, wiele instancji, rozmowa w więcej niż jednej), ale skutek jest cichy,
+więc wpis zostaje jako pierwszy kandydat do przemyślenia, gdyby ScriptingBridge
+kiedykolwiek faktycznie zawiódł.
 
 **Zapisany identyfikator, który się rozwiązuje, ale jest nieosiągalny.** Kapsel
 po resecie fabrycznym albo sparowany z innym komputerem daje wieczne „szukam"

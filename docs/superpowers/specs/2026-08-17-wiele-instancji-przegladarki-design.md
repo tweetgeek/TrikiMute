@@ -105,6 +105,12 @@ podzbiór i tym bardziej go nie znajdzie. Wołanie jej przy `.noTarget`
 kosztowałoby ruch Apple Events przy każdym takcie sondy — a stan „uzbrojony,
 brak rozmowy" jest najczęstszy — nie zmieniając wyniku.
 
+Poza tym jednym warunkiem fallback działa **bez ograniczeń**: obsługuje sondę
+i Akcję, niezależnie od tego, ile instancji danej przeglądarki widać. Rozważana
+i odrzucona była wersja ostrożniejsza — zapas czynny tylko przy dokładnie jednej
+instancji, bo wtedy AppleScript nie ma jak trafić źle. Odrzucona świadomie, na
+rzecz prostoty kodu i testów, wraz z ryzykiem opisanym niżej.
+
 ### Obsługa błędów
 
 Największe ryzyko całej zmiany. `SBApplication` domyślnie **połyka** błędy
@@ -128,9 +134,25 @@ Wymagania:
 ### Kolejność
 
 Zasada bez zmian — „ta, na którą patrzysz, wygrywa" — tylko schodzi poziom
-niżej. Zamiast kolejności nazw przeglądarek nowa ścieżka sortuje instancje:
-aktywna pierwsza, dalej kolejność systemowa; w ramach instancji zachowana
-kolejność okien, czyli okno na wierzchu pierwsze.
+niżej. Nowa ścieżka sortuje instancje trzema kluczami, w tej kolejności:
+
+1. **instancja aktywna** (jej aplikacja jest na wierzchu) idzie pierwsza,
+2. **kolejność przeglądarek** z dzisiejszej listy — Chrome przed Brave,
+3. **rosnący identyfikator procesu**.
+
+W ramach instancji zachowana kolejność okien, czyli okno na wierzchu pierwsze.
+
+Trzeci klucz nie jest ozdobnikiem. `NSWorkspace.runningApplications` nie
+gwarantuje kolejności, więc bez niego ten sam układ okien mógłby po restarcie dać
+inny Cel, bez żadnej zmiany po stronie użytkownika. Przy okazji identyfikator
+procesu zwykle stawia instancję uruchomioną rano przez człowieka przed
+instancją narzędzia, które wstało później — dokładnie tak, jak w usterce, która
+ten dokument wywołała.
+
+Wybór karty w ramach instancji zostaje **bez zmian względem dzisiejszego
+zachowania**: wygrywa pierwsza karta z kompletem przycisków, a karta z adresem
+Meet, która kompletu nie ma, jest pomijana i szukanie idzie dalej. Odróżnianie
+trwającej rozmowy od poczekalni jest poza zakresem (patrz niżej).
 
 `BrowserOrder` **zostaje**, bo obsługuje ją ścieżka zapasowa: AppleScript nadal
 adresuje przeglądarki nazwami i bez tej listy nie ma czego odpytać. Wstrzykiwana
@@ -163,6 +185,15 @@ Atrapy `BrowserAccess` dają przypadki dziś nieosiągalne:
   rozwiązujemy go przy okazji.
 
 ## Ryzyko, które zostaje po wdrożeniu
+
+**Ścieżka zapasowa może wykonać Akcję w niewłaściwej instancji.** AppleScript
+z definicji nie potrafi wskazać adresata, więc gdy ScriptingBridge zawiedzie,
+a rozmowa toczy się w dwóch instancjach naraz, zapas kliknie w tej, którą wybrał
+system. Użytkownik usłyszy dźwięk sukcesu i uzna się za wyciszonego, nie będąc
+nim. Ryzyko przyjęte świadomie, w zamian za prostotę; materializuje się dopiero
+przy zbiegu trzech warunków (awaria ScriptingBridge, wiele instancji, rozmowa
+w więcej niż jednej), a jedyną znaną przyczyną awarii pierwszej ścieżki jest
+zmiana słownika skryptowego przez producenta przeglądarki.
 
 `unsafeBitCast` na protokołach `@objc` jest kruchy: literówka w nazwie selektora
 nie jest błędem kompilacji, tylko cichą awarią w czasie działania. Spike
