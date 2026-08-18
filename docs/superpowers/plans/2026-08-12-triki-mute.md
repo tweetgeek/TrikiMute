@@ -171,16 +171,17 @@ Buduje najkrótszą ścieżkę do podpisanej, uruchamialnej aplikacji. Rozbraja 
 
 **Files:**
 - Create: `Package.swift`
-- Create: `Sources/TrikiMuteCore/Placeholder.swift`
+- Create: `Sources/TrikiMuteCore/TrikiMuteCore.swift`
 - Create: `Sources/TrikiMute/TrikiMuteApp.swift`
 - Create: `Sources/TrikiMute/Info.plist`
 - Create: `Sources/TrikiMute/TrikiMute.entitlements`
 - Create: `scripts/build-app.sh`
-- Create: `Tests/TrikiMuteCoreTests/PackageSmokeTests.swift`
 
 **Interfaces:**
 - Consumes: nic.
 - Produces: cele `TrikiMuteCore` (biblioteka) i `TrikiMute` (wykonywalny), używane przez wszystkie dalsze zadania. Skrypt `scripts/build-app.sh` produkujący `build/TrikiMute.app`.
+
+To zadanie nie ma testów jednostkowych — nie ma jeszcze logiki, którą dałoby się sensownie testować, a test sprawdzający, że stała równa się samej sobie, nie weryfikuje niczego. Weryfikacją jest ręczny test w kroku 7: ikona pojawia się w pasku menu, a `codesign --verify` przechodzi. Cel testowy dochodzi do `Package.swift` w Task 4, razem z pierwszymi prawdziwymi testami.
 
 - [ ] **Step 1: Napisz manifest pakietu**
 
@@ -204,36 +205,17 @@ let package = Package(
             exclude: ["Info.plist", "TrikiMute.entitlements"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
-        .testTarget(
-            name: "TrikiMuteCoreTests",
-            dependencies: ["TrikiMuteCore"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
-        ),
     ]
 )
 ```
 
-- [ ] **Step 2: Napisz test dymny, który wymusza istnienie biblioteki**
+Cel testowy celowo jeszcze nie istnieje — SPM zgłasza błąd, gdy zadeklarowany cel wskazuje na nieistniejący katalog. Dochodzi w Task 4.
 
-`Tests/TrikiMuteCoreTests/PackageSmokeTests.swift`:
+- [ ] **Step 2: Dodaj minimalną zawartość biblioteki**
 
-```swift
-import Testing
-@testable import TrikiMuteCore
+SPM wymaga, żeby cel miał przynajmniej jeden plik źródłowy.
 
-@Test func bibliotekaSieLinkuje() {
-    #expect(TrikiMuteCore.wersjaProtokolu == 1)
-}
-```
-
-- [ ] **Step 3: Uruchom test i potwierdź, że nie przechodzi**
-
-Run: `swift test`
-Expected: FAIL — kompilacja nie znajduje `TrikiMuteCore.wersjaProtokolu`.
-
-- [ ] **Step 4: Dodaj minimalną zawartość biblioteki**
-
-`Sources/TrikiMuteCore/Placeholder.swift`:
+`Sources/TrikiMuteCore/TrikiMuteCore.swift`:
 
 ```swift
 /// Przestrzeń nazw biblioteki. Wersja protokołu Kapsla, na którym opiera się
@@ -243,12 +225,7 @@ public enum TrikiMuteCore {
 }
 ```
 
-- [ ] **Step 5: Uruchom test i potwierdź, że przechodzi**
-
-Run: `swift test`
-Expected: PASS, 1 test.
-
-- [ ] **Step 6: Napisz aplikację w pasku menu**
+- [ ] **Step 3: Napisz aplikację w pasku menu**
 
 `Sources/TrikiMute/TrikiMuteApp.swift`:
 
@@ -269,7 +246,7 @@ struct TrikiMuteApp: App {
 }
 ```
 
-- [ ] **Step 7: Napisz Info.plist**
+- [ ] **Step 4: Napisz Info.plist**
 
 `Sources/TrikiMute/Info.plist`:
 
@@ -304,7 +281,7 @@ struct TrikiMuteApp: App {
 </plist>
 ```
 
-- [ ] **Step 8: Napisz plik uprawnień**
+- [ ] **Step 5: Napisz plik uprawnień**
 
 `Sources/TrikiMute/TrikiMute.entitlements`:
 
@@ -319,7 +296,7 @@ struct TrikiMuteApp: App {
 </plist>
 ```
 
-- [ ] **Step 9: Napisz skrypt budujący**
+- [ ] **Step 6: Napisz skrypt budujący**
 
 `scripts/build-app.sh`:
 
@@ -356,7 +333,7 @@ codesign --verify --verbose=2 "$APP"
 echo "Zbudowano: $APP"
 ```
 
-- [ ] **Step 10: Zbuduj i uruchom**
+- [ ] **Step 7: Zbuduj i uruchom**
 
 ```bash
 chmod +x scripts/build-app.sh
@@ -366,10 +343,10 @@ open build/TrikiMute.app
 
 Expected: w prawym górnym rogu ekranu pojawia się ikona przekreślonego mikrofonu. Kliknięcie pokazuje menu z pozycją „Zakończ". W Docku **nie ma** ikony aplikacji. `codesign --verify` kończy się bez błędu.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add Package.swift Sources scripts Tests
+git add Package.swift Sources scripts
 git commit -m "feat: szkielet pakietu SPM, skrypt budujacy i ikona w pasku menu"
 ```
 
@@ -380,6 +357,7 @@ git commit -m "feat: szkielet pakietu SPM, skrypt budujacy i ikona w pasku menu"
 Zamienia surowy strumień bajtów z Kapsla na stan przycisku. Czysta logika, testowana bez sprzętu.
 
 **Files:**
+- Modify: `Package.swift` (dochodzi cel testowy)
 - Create: `Sources/TrikiMuteCore/Models.swift`
 - Create: `Sources/TrikiMuteCore/FrameParser.swift`
 - Create: `Tests/TrikiMuteCoreTests/FrameParserTests.swift`
@@ -388,7 +366,19 @@ Zamienia surowy strumień bajtów z Kapsla na stan przycisku. Czysta logika, tes
 - Consumes: nic.
 - Produces: `public struct ButtonSample: Equatable, Sendable { public let pressed: Bool; public let timestamp: TimeInterval }` oraz `public struct FrameParser { public init(); public mutating func consume(_ bytes: [UInt8], at timestamp: TimeInterval) -> [ButtonSample] }`. Task 5 konsumuje `ButtonSample`, Task 8 wywołuje `consume`.
 
-- [ ] **Step 1: Napisz testy**
+- [ ] **Step 1: Dodaj cel testowy do Package.swift**
+
+W tablicy `targets`, za `.executableTarget`, dopisz:
+
+```swift
+        .testTarget(
+            name: "TrikiMuteCoreTests",
+            dependencies: ["TrikiMuteCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+```
+
+- [ ] **Step 2: Napisz testy**
 
 `Tests/TrikiMuteCoreTests/FrameParserTests.swift`:
 
@@ -454,12 +444,12 @@ private func ramka(pressed: Bool) -> [UInt8] {
 }
 ```
 
-- [ ] **Step 2: Uruchom testy i potwierdź, że nie przechodzą**
+- [ ] **Step 3: Uruchom testy i potwierdź, że nie przechodzą**
 
 Run: `swift test --filter FrameParserTests`
 Expected: FAIL — kompilacja nie znajduje typów `FrameParser` i `ButtonSample`.
 
-- [ ] **Step 3: Napisz model danych**
+- [ ] **Step 4: Napisz model danych**
 
 `Sources/TrikiMuteCore/Models.swift`:
 
@@ -492,7 +482,7 @@ public enum MeetAction: Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 4: Napisz parser**
+- [ ] **Step 5: Napisz parser**
 
 `Sources/TrikiMuteCore/FrameParser.swift`:
 
@@ -555,15 +545,15 @@ public struct FrameParser {
 }
 ```
 
-- [ ] **Step 5: Uruchom testy i potwierdź, że przechodzą**
+- [ ] **Step 6: Uruchom testy i potwierdź, że przechodzą**
 
 Run: `swift test --filter FrameParserTests`
 Expected: PASS, 7 testów.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add Sources/TrikiMuteCore/Models.swift Sources/TrikiMuteCore/FrameParser.swift Tests/TrikiMuteCoreTests/FrameParserTests.swift
+git add Package.swift Sources/TrikiMuteCore/Models.swift Sources/TrikiMuteCore/FrameParser.swift Tests/TrikiMuteCoreTests/FrameParserTests.swift
 git commit -m "feat(core): parser ramek IMU wyciagajacy stan przycisku Kapsla"
 ```
 
@@ -1053,7 +1043,7 @@ Expected: PASS, 10 testów.
 - [ ] **Step 6: Uruchom cały zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 25 testów (1 + 7 + 7 + 10).
+Expected: PASS, 24 testy (7 + 7 + 10).
 
 - [ ] **Step 7: Commit**
 
@@ -1925,7 +1915,7 @@ naciśnięciu przycisku bez żadnej ingerencji.
 - [ ] **Step 5: Uruchom pełny zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 25 testów.
+Expected: PASS, 24 testy.
 
 - [ ] **Step 6: Commit**
 
