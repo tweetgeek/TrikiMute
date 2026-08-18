@@ -2,45 +2,48 @@ import CoreBluetooth
 import Foundation
 import TrikiMuteCore
 
-/// Stan Kapsla widziany przez aplikację.
-enum PolaczenieKapsla: Equatable {
-    case rozlaczony
-    case szukam
-    case uzbrojony
-    case blad(String)
+/// Device state as seen by the app.
+enum DeviceState: Equatable {
+    case disconnected
+    case searching
+    case armed
+    case error(String)
 }
 
-/// Utrzymuje połączenie z Kapslem i zamienia jego strumień na zdarzenia przycisku.
+/// Maintains the connection to the device and turns its stream into button
+/// events.
 ///
-/// Model Uzbrojenia: śpiący Kapsel nie reklamuje się w eterze, więc aplikacja
-/// nie ma jak się z nim połączyć z własnej inicjatywy. Pierwsze naciśnięcie budzi
-/// Kapsel i zestawia połączenie — i z definicji nie wywołuje Akcji, bo w chwili
-/// naciśnięcia aplikacja jeszcze nie słuchała. Zamiast ciągłego skanowania
-/// zapamiętujemy identyfikator i zawieszamy `connect()`; CoreBluetooth podniesie
-/// połączenie samo, gdy tylko Kapsel się odezwie.
+/// Arming model: a sleeping device doesn't advertise itself over the air, so
+/// the app has no way to connect to it on its own initiative. The first
+/// press wakes the device and establishes the connection — and by
+/// definition doesn't trigger an Action, because at the moment of the press
+/// the app wasn't listening yet. Instead of scanning continuously, we
+/// remember the identifier and hold a pending `connect()`; CoreBluetooth
+/// will bring the connection up on its own as soon as the device speaks up.
 @MainActor
 final class TrikiConnection: NSObject {
-    private enum UUIDy {
+    private enum UUIDs {
         static let nus = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         static let rx = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
         static let tx = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
-        static let bateria = CBUUID(string: "180F")
-        static let poziomBaterii = CBUUID(string: "2A19")
+        static let battery = CBUUID(string: "180F")
+        static let batteryLevel = CBUUID(string: "2A19")
     }
 
-    /// Komenda uruchamiająca strumień IMU. Bez niej Kapsel milczy, a stan
-    /// przycisku jest zaszyty w nagłówku ramek IMU — nie da się go czytać osobno.
-    private static let komendaStartowa = Data([0x20, 0x10, 0x00, 0xD0, 0x07, 0x68, 0x00, 0x03])
-    private static let kluczZnanegoKapsla = "znanyKapselUUID"
-    private static let fragmentNazwy = "triki"
+    /// Command that starts the IMU stream. Without it the device stays
+    /// silent, and button state is embedded in the IMU frame header — it
+    /// can't be read separately.
+    private static let startCommand = Data([0x20, 0x10, 0x00, 0xD0, 0x07, 0x68, 0x00, 0x03])
+    private static let knownDeviceKey = "znanyKapselUUID"
+    private static let nameFragment = "triki"
 
     var onEvent: ((ButtonEvent) -> Void)?
-    var onState: ((PolaczenieKapsla) -> Void)?
+    var onState: ((DeviceState) -> Void)?
     var onBattery: ((Int) -> Void)?
     var onRSSI: ((Int) -> Void)?
 
     private var central: CBCentralManager!
-    private var kapsel: CBPeripheral?
+    private var peripheral: CBPeripheral?
     private var rx: CBCharacteristic?
     private var parser = FrameParser()
     private var recognizer = ButtonRecognizer()
@@ -49,38 +52,39 @@ final class TrikiConnection: NSObject {
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
-    /// Prosi o pomiar siły sygnału. Odpowiedź przychodzi asynchronicznie
-    /// w `peripheral(_:didReadRSSI:error:)`.
-    func odczytajRSSI() {
-        kapsel?.readRSSI()
+    /// Requests a signal strength reading. The answer arrives asynchronously
+    /// in `peripheral(_:didReadRSSI:error:)`.
+    func readRSSI() {
+        peripheral?.readRSSI()
     }
 
-    /// Zapomina Kapsel i wraca do skanowania. Do użycia, gdy trzeba sparować inny.
+    /// Forgets the device and goes back to scanning. Use when you need to
+    /// pair a different one.
     func forget() {
-        UserDefaults.standard.removeObject(forKey: Self.kluczZnanegoKapsla)
-        if let kapsel { central.cancelPeripheralConnection(kapsel) }
-        kapsel = nil
-        onState?(.rozlaczony)
-        wznowPoszukiwania()
+        UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        peripheral = nil
+        onState?(.disconnected)
+        resumeSearch()
     }
 
-    /// Znany Kapsel: zawieszony `connect()`. Nieznany: skan po nazwie.
-    private func wznowPoszukiwania() {
+    /// Known device: a pending `connect()`. Unknown: scan by name.
+    private func resumeSearch() {
         guard central?.state == .poweredOn else { return }
-        onState?(.szukam)
+        onState?(.searching)
 
-        if let zapisany = UserDefaults.standard.string(forKey: Self.kluczZnanegoKapsla),
-           let uuid = UUID(uuidString: zapisany),
-           let znany = central.retrievePeripherals(withIdentifiers: [uuid]).first {
-            kapsel = znany
-            znany.delegate = self
-            central.connect(znany, options: nil)
+        if let saved = UserDefaults.standard.string(forKey: Self.knownDeviceKey),
+           let uuid = UUID(uuidString: saved),
+           let known = central.retrievePeripherals(withIdentifiers: [uuid]).first {
+            peripheral = known
+            known.delegate = self
+            central.connect(known, options: nil)
             return
         }
         central.scanForPeripherals(withServices: nil, options: nil)
     }
 
-    private func zresetujRozpoznawanie() {
+    private func resetRecognition() {
         parser = FrameParser()
         recognizer = ButtonRecognizer()
     }
@@ -90,11 +94,11 @@ extension TrikiConnection: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
             switch central.state {
-            case .poweredOn: wznowPoszukiwania()
-            case .poweredOff: onState?(.blad("Bluetooth jest wyłączony"))
-            case .unauthorized: onState?(.blad("Brak zgody na Bluetooth"))
-            case .unsupported: onState?(.blad("Ten Mac nie obsługuje Bluetooth LE"))
-            default: onState?(.rozlaczony)
+            case .poweredOn: resumeSearch()
+            case .poweredOff: onState?(.error("Bluetooth jest wyłączony"))
+            case .unauthorized: onState?(.error("Brak zgody na Bluetooth"))
+            case .unsupported: onState?(.error("Ten Mac nie obsługuje Bluetooth LE"))
+            default: onState?(.disconnected)
             }
         }
     }
@@ -105,12 +109,12 @@ extension TrikiConnection: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        let nazwa = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
-        guard nazwa.lowercased().contains(Self.fragmentNazwy) else { return }
+        let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
+        guard name.lowercased().contains(Self.nameFragment) else { return }
         Task { @MainActor in
             central.stopScan()
-            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.kluczZnanegoKapsla)
-            kapsel = peripheral
+            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.knownDeviceKey)
+            self.peripheral = peripheral
             peripheral.delegate = self
             central.connect(peripheral, options: nil)
         }
@@ -118,8 +122,8 @@ extension TrikiConnection: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
-            zresetujRozpoznawanie()
-            peripheral.discoverServices([UUIDy.nus, UUIDy.bateria])
+            resetRecognition()
+            peripheral.discoverServices([UUIDs.nus, UUIDs.battery])
         }
     }
 
@@ -129,15 +133,17 @@ extension TrikiConnection: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
-            // Rozłączenie celowe: forget() wyzerował kapsel, zanim callback
-            // dotarł. Bez tej bramki „Zapomnij Kapsel" natychmiast łączyłby
-            // się z powrotem, a skan zapisywałby identyfikator na nowo.
-            guard peripheral.identifier == kapsel?.identifier else { return }
+            // Deliberate disconnect: forget() already cleared peripheral
+            // before the callback arrived. Without this guard, "Forget
+            // Device" would immediately reconnect, and the scan would save
+            // the identifier right back.
+            guard peripheral.identifier == self.peripheral?.identifier else { return }
             rx = nil
-            onState?(.rozlaczony)
-            // Zawieszony connect() podniesie połączenie, gdy Kapsel wróci.
+            onState?(.disconnected)
+            // The pending connect() will bring the connection back up once
+            // the device returns.
             central.connect(peripheral, options: nil)
-            onState?(.szukam)
+            onState?(.searching)
         }
     }
 }
@@ -146,13 +152,13 @@ extension TrikiConnection: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             Task { @MainActor in
-                onState?(.blad("Nie udało się odczytać usług: \(error.localizedDescription)"))
+                onState?(.error("Nie udało się odczytać usług: \(error.localizedDescription)"))
             }
             return
         }
         Task { @MainActor in
-            for usluga in peripheral.services ?? [] {
-                peripheral.discoverCharacteristics(nil, for: usluga)
+            for service in peripheral.services ?? [] {
+                peripheral.discoverCharacteristics(nil, for: service)
             }
         }
     }
@@ -162,13 +168,13 @@ extension TrikiConnection: CBPeripheralDelegate {
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
-        let uslugaUUID = service.uuid
+        let serviceUUID = service.uuid
         if let error {
-            // Awaria na usłudze baterii nie unieruchamia aplikacji; awaria na
-            // NUS oznacza, że strumienia nie będzie.
-            if uslugaUUID == UUIDy.nus {
+            // A failure on the battery service doesn't disable the app; a
+            // failure on NUS means there will be no stream.
+            if serviceUUID == UUIDs.nus {
                 Task { @MainActor in
-                    onState?(.blad("Nie udało się odczytać charakterystyk: \(error.localizedDescription)"))
+                    onState?(.error("Nie udało się odczytać charakterystyk: \(error.localizedDescription)"))
                 }
             }
             return
@@ -176,13 +182,13 @@ extension TrikiConnection: CBPeripheralDelegate {
         Task { @MainActor in
             for ch in service.characteristics ?? [] {
                 switch ch.uuid {
-                case UUIDy.tx:
-                    // Komendę startową wysyłamy dopiero po potwierdzeniu
-                    // subskrypcji, w didUpdateNotificationStateFor.
+                case UUIDs.tx:
+                    // The start command is sent only after subscription is
+                    // confirmed, in didUpdateNotificationStateFor.
                     peripheral.setNotifyValue(true, for: ch)
-                case UUIDy.rx:
+                case UUIDs.rx:
                     rx = ch
-                case UUIDy.poziomBaterii:
+                case UUIDs.batteryLevel:
                     peripheral.readValue(for: ch)
                     peripheral.setNotifyValue(true, for: ch)
                 default:
@@ -192,43 +198,43 @@ extension TrikiConnection: CBPeripheralDelegate {
         }
     }
 
-    /// Potwierdzenie subskrypcji. Dopiero tutaj wiadomo, że strumień ma jak
-    /// dotrzeć — więc dopiero tutaj wysyłamy komendę startową i ogłaszamy
-    /// Uzbrojenie.
+    /// Subscription confirmation. Only here do we know the stream has a way
+    /// to arrive — so only here do we send the start command and announce
+    /// Arming.
     ///
-    /// Kolejność, w jakiej CoreBluetooth zwraca charakterystyki, nie jest
-    /// gwarantowana. Ogłaszanie Uzbrojenia przy odkryciu RX mogło więc paść,
-    /// zanim aplikacja zdążyła zasubskrybować TX — czyli deklarować gotowość
-    /// połączenia, które nie miało jak niczego dostarczyć.
+    /// The order in which CoreBluetooth returns characteristics isn't
+    /// guaranteed. Announcing Arming on discovery of RX could therefore fire
+    /// before the app had subscribed to TX — i.e. declare readiness for a
+    /// connection that had no way to deliver anything.
     nonisolated func peripheral(
         _ peripheral: CBPeripheral,
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
         let uuid = characteristic.uuid
-        let wlaczone = characteristic.isNotifying
+        let enabled = characteristic.isNotifying
         if let error {
-            if uuid == UUIDy.tx {
+            if uuid == UUIDs.tx {
                 Task { @MainActor in
-                    onState?(.blad("Nie udało się włączyć strumienia: \(error.localizedDescription)"))
+                    onState?(.error("Nie udało się włączyć strumienia: \(error.localizedDescription)"))
                 }
             }
             return
         }
-        guard uuid == UUIDy.tx, wlaczone else { return }
+        guard uuid == UUIDs.tx, enabled else { return }
         Task { @MainActor in
             guard let rx else {
-                onState?(.blad("Brak charakterystyki do wysłania komendy startowej"))
+                onState?(.error("Brak charakterystyki do wysłania komendy startowej"))
                 return
             }
-            peripheral.writeValue(Self.komendaStartowa, for: rx, type: .withoutResponse)
-            onState?(.uzbrojony)
+            peripheral.writeValue(Self.startCommand, for: rx, type: .withoutResponse)
+            onState?(.armed)
         }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
-        let wartosc = RSSI.intValue
-        Task { @MainActor in onRSSI?(wartosc) }
+        let value = RSSI.intValue
+        Task { @MainActor in onRSSI?(value) }
     }
 
     nonisolated func peripheral(
@@ -236,25 +242,26 @@ extension TrikiConnection: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        guard let dane = characteristic.value else { return }
+        guard let data = characteristic.value else { return }
         let uuid = characteristic.uuid
-        let bajty = [UInt8](dane)
-        // Zegar ścienny (Date()) nie jest monotoniczny — cofnięcie czasu
-        // (wybudzenie po długim śnie, korekta NTP, ręczna zmiana) dałoby
-        // ujemne różnice i ButtonRecognizer odrzucałby każde zbocze jako
-        // drganie styku, aż zegar by „dogonił" poprzednie znaczniki czasu.
-        // systemUptime rośnie zawsze, więc odstępy między próbkami są
-        // wiarygodne niezależnie od zmian zegara systemowego.
-        let teraz = ProcessInfo.processInfo.systemUptime
+        let bytes = [UInt8](data)
+        // The wall clock (Date()) isn't monotonic — a clock going backwards
+        // (waking from a long sleep, an NTP correction, a manual time
+        // change) would produce negative gaps, and ButtonRecognizer would
+        // reject every edge as contact bounce until the clock "caught up"
+        // with the previous timestamps. systemUptime always increases, so
+        // the gaps between samples stay reliable regardless of system clock
+        // changes.
+        let now = ProcessInfo.processInfo.systemUptime
 
         Task { @MainActor in
             switch uuid {
-            case UUIDy.poziomBaterii:
-                if let poziom = bajty.first { onBattery?(Int(poziom)) }
-            case UUIDy.tx:
-                for probka in parser.consume(bajty, at: teraz) {
-                    if let zdarzenie = recognizer.consume(probka) {
-                        onEvent?(zdarzenie)
+            case UUIDs.batteryLevel:
+                if let level = bytes.first { onBattery?(Int(level)) }
+            case UUIDs.tx:
+                for sample in parser.consume(bytes, at: now) {
+                    if let event = recognizer.consume(sample) {
+                        onEvent?(event)
                     }
                 }
             default:

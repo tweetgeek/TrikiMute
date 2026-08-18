@@ -1,38 +1,38 @@
 import ServiceManagement
 
-/// Uruchamianie przy logowaniu. `SMAppService.mainApp` działa tylko dla
-/// podpisanego pakietu .app — uruchomiona wprost binarka zgłosi błąd.
+/// Launch-at-login registration. `SMAppService.mainApp` only works for a
+/// signed .app bundle — a binary launched directly will report an error.
 enum LoginItem {
-    /// Stan rejestracji w formie, jaką da się pokazać w menu.
-    enum Stan: Equatable {
-        case wylaczony
-        case wlaczony
-        /// Zarejestrowany, ale czeka na zatwierdzenie w Ustawieniach
-        /// systemowych. Bez tego stanu wygląda identycznie jak wyłączony,
-        /// więc kliknięcie prowadziłoby do ponownej rejestracji zamiast
-        /// skierować użytkownika tam, gdzie sprawa czeka na decyzję.
-        case wymagaZatwierdzenia
+    /// Registration status, in a form fit to display in the menu.
+    enum Status: Equatable {
+        case disabled
+        case enabled
+        /// Registered, but waiting for approval in System Settings. Without
+        /// this state it would look identical to disabled, so clicking it
+        /// would lead to re-registering instead of pointing the user to
+        /// where the matter is actually pending.
+        case requiresApproval
     }
 
-    static var stan: Stan {
+    static var status: Status {
         switch SMAppService.mainApp.status {
-        case .enabled: return .wlaczony
-        case .requiresApproval: return .wymagaZatwierdzenia
-        default: return .wylaczony
+        case .enabled: return .enabled
+        case .requiresApproval: return .requiresApproval
+        default: return .disabled
         }
     }
 
-    static var wlaczone: Bool { stan == .wlaczony }
+    static var isEnabled: Bool { status == .enabled }
 
-    /// Zwraca opis błędu, jeśli operacja się nie powiodła.
+    /// Returns an error description if the operation failed.
     ///
-    /// Rejestracja bywa blokowana przez politykę zarządzania urządzeniem albo
-    /// ograniczenia `SMAppService`. Zgłaszanie tego przez `print` byłoby
-    /// bezużyteczne: aplikacja uruchamiana przez LaunchServices nie ma gdzie
-    /// wypisywać, a użytkownik w tym momencie patrzy akurat na menu.
-    static func przelacz() -> String? {
+    /// Registration can be blocked by device management policy or by
+    /// `SMAppService` restrictions. Reporting this via `print` would be
+    /// useless: an app launched by LaunchServices has nowhere to print to,
+    /// and the user is looking right at the menu at this moment.
+    static func toggle() -> String? {
         do {
-            if wlaczone {
+            if isEnabled {
                 try SMAppService.mainApp.unregister()
             } else {
                 try SMAppService.mainApp.register()

@@ -1,26 +1,27 @@
 import AppKit
 import TrikiMuteCore
 
-/// Sygnały dźwiękowe potwierdzające wynik Akcji.
+/// Audible signals confirming the outcome of an Action.
 ///
-/// Pasek menu jest złym kanałem na komunikat o niepowodzeniu, bo cała wartość
-/// Kapsla polega na tym, że nie patrzysz na ekran. Dźwięk trafia do słuchawek,
-/// czyli tam, gdzie faktycznie jesteś podczas rozmowy.
+/// The menu bar is a poor channel for failure notifications, because the
+/// whole point of the device is that you're not looking at the screen. Sound
+/// reaches your headphones — where you actually are during a call.
 ///
-/// Nieuzbrojony Kapsel nie wywoła żadnego dźwięku — aplikacja nie wie o jego
-/// naciśnięciu. Cisza w tej sytuacji jest nieunikniona i oznacza brak Gotowości.
+/// An unarmed device won't trigger any sound — the app doesn't know it was
+/// pressed. Silence in that situation is unavoidable and signals the absence
+/// of Readiness.
 enum Feedback {
-    private static let sukces = "Tink"
-    private static let brakCelu = "Pop"
-    private static let blad = "Basso"
+    private static let success = "Tink"
+    private static let noTarget = "Pop"
+    private static let failure = "Basso"
 
-    static func zagraj(_ wynik: ActionOutcome) {
-        let nazwa: String
-        switch wynik {
-        case .performed: nazwa = sukces
-        case .noTarget: nazwa = brakCelu
-        case .failed: nazwa = blad
+    static func play(_ outcome: ActionOutcome) {
+        let name: String
+        switch outcome {
+        case .performed: name = success
+        case .noTarget: name = noTarget
+        case .failed: name = failure
         }
-        NSSound(named: nazwa)?.play()
+        NSSound(named: name)?.play()
     }
 }

@@ -3,12 +3,12 @@ import Testing
 import TrikiMuteCore
 @testable import TrikiMute
 
-/// Atrapa `TrikiConnection`: pozwala testom wywoływać `onState`/`onEvent`
-/// wprost, bez prawdziwego CoreBluetooth.
+/// Fake `TrikiConnection`: lets tests call `onState`/`onEvent` directly,
+/// without real CoreBluetooth.
 @MainActor
-private final class FakeKapselConnection: KapselConnection {
+private final class FakeDeviceConnection: DeviceConnection {
     var onEvent: ((ButtonEvent) -> Void)?
-    var onState: ((PolaczenieKapsla) -> Void)?
+    var onState: ((DeviceState) -> Void)?
     var onBattery: ((Int) -> Void)?
     var onRSSI: ((Int) -> Void)?
 
@@ -16,180 +16,180 @@ private final class FakeKapselConnection: KapselConnection {
     private(set) var forgetCalled = false
 
     func start() { startCalled = true }
-    func odczytajRSSI() {}
+    func readRSSI() {}
     func forget() { forgetCalled = true }
 }
 
 private struct RunnerError: Error {}
 
-/// Atrapa `ScriptRunner`: oddaje kolejne zaprogramowane odpowiedzi, w
-/// kolejności wywołań. "THROW" rzuca zamiast zwracać — pozwala odtworzyć
-/// przeglądarkę, która nie odpowiada. Ten sam wzorzec co w
-/// `MeetControllerTests`, zduplikowany celowo: test target nie widzi
-/// prywatnych typów innego test targetu.
+/// Fake `ScriptRunner`: hands back programmed responses in order. "THROW"
+/// throws instead of returning — lets us reproduce a browser that doesn't
+/// answer. Same pattern as in `MeetControllerTests`, duplicated
+/// deliberately: this test target can't see the other test target's
+/// private types.
 private final class FakeRunner: ScriptRunner {
-    var odpowiedzi: [String]
-    private(set) var wykonane: [String] = []
+    var responses: [String]
+    private(set) var executed: [String] = []
 
-    init(_ odpowiedzi: [String]) { self.odpowiedzi = odpowiedzi }
+    init(_ responses: [String]) { self.responses = responses }
 
     func run(_ source: String) throws -> String {
-        wykonane.append(source)
-        let odpowiedz = odpowiedzi.isEmpty ? "NONE" : odpowiedzi.removeFirst()
-        if odpowiedz == "THROW" { throw RunnerError() }
-        return odpowiedz
+        executed.append(source)
+        let response = responses.isEmpty ? "NONE" : responses.removeFirst()
+        if response == "THROW" { throw RunnerError() }
+        return response
     }
 }
 
-/// Kolejka sterowana ręcznie przez test, zamiast prawdziwych wątków i
-/// realnych opóźnień.
+/// A queue driven manually by the test, instead of real threads and real
+/// delays.
 ///
-/// `tlo` (praca w tle: `perform`/`probe`) wykonuje się od razu, synchronicznie,
-/// na wątku wywołującym — deterministycznie, bez prawdziwego skoku wątku.
-/// `glowny` (powrót na główny wątek) i `poCzasie` (odświeżenie opóźnione po
-/// Akcji) trafiają do kolejki i czekają na jawne wywołanie `odpal()`. Dzięki
-/// temu test może wstrzyknąć inne wywołania dokładnie w oknie, w którym w
-/// produkcji trwałby skok między wątkami — czyli odtworzyć wyścig bez snu i
-/// bez założeń o czasie.
+/// `background` (background work: `perform`/`probe`) runs immediately,
+/// synchronously, on the calling thread — deterministically, without a real
+/// thread hop. `main` (return to the main thread) and `afterDelay` (refresh
+/// delayed after an Action) land in the queue and wait for an explicit call
+/// to `flush()`. This lets the test inject other calls at exactly the point
+/// where a thread hop would be in flight in production — i.e. reproduce a
+/// race without sleeping and without assumptions about timing.
 @MainActor
-private final class TestowaKolejka: SkryptowaKolejka {
-    private(set) var liczbaUruchomien = 0
-    private var oczekujace: [() -> Void] = []
+private final class TestQueue: ScriptQueue {
+    private(set) var runCount = 0
+    private var pending: [() -> Void] = []
 
-    func uruchom<T>(tlo: @escaping () -> T, glowny: @escaping (T) -> Void) {
-        liczbaUruchomien += 1
-        let wynik = tlo()
-        oczekujace.append { glowny(wynik) }
+    func run<T>(background: @escaping () -> T, main: @escaping (T) -> Void) {
+        runCount += 1
+        let result = background()
+        pending.append { main(result) }
     }
 
-    func poCzasie(_ opoznienie: TimeInterval, wykonaj: @escaping () -> Void) {
-        oczekujace.append(wykonaj)
+    func afterDelay(_ delay: TimeInterval, execute: @escaping () -> Void) {
+        pending.append(execute)
     }
 
-    /// Wykonuje wszystkie zadania zakolejkowane do tej pory, w kolejności
-    /// zgłoszenia. Zadania dodane w trakcie tego wywołania (np. rekurencyjne
-    /// `odswiezCel` przy zaległej sondzie) trafiają do kolejnej fali, nie do
-    /// bieżącej — dokładnie tak jak realny skok na `DispatchQueue.main`
-    /// zaplanowany w trakcie wykonywania innego bloku na tej samej kolejce.
-    func odpal() {
-        let zadania = oczekujace
-        oczekujace = []
-        for zadanie in zadania { zadanie() }
+    /// Runs every task queued so far, in the order it was submitted. Tasks
+    /// added during this call (e.g. a recursive `refreshTarget` from a
+    /// pending probe) land in the next wave, not this one — exactly like a
+    /// real hop onto `DispatchQueue.main` scheduled while another block on
+    /// that same queue is running.
+    func flush() {
+        let tasks = pending
+        pending = []
+        for task in tasks { task() }
     }
 }
 
-// MARK: - Wyścig 1: spóźniona sonda po zatrzymaniu
+// MARK: - Race 1: late probe after stop
 
-@Test @MainActor func sondaKtoraWracaPoZatrzymaniuNicNiePisze() {
-    let polaczenie = FakeKapselConnection()
-    // Gdyby ten wynik trafił na ekran, cel przestałby być nil — dokładnie to
-    // sprawdzamy poniżej.
+@Test @MainActor func probeReturningAfterStopWritesNothing() {
+    let connection = FakeDeviceConnection()
+    // If this result landed on screen, target would stop being nil — that's
+    // exactly what we check below.
     let runner = FakeRunner(["10"])
     let controller = MeetController(runner: runner)
-    let kolejka = TestowaKolejka()
-    let state = AppState(polaczenie: polaczenie, controller: controller, kolejka: kolejka)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
-    polaczenie.onState?(.uzbrojony)
-    #expect(kolejka.liczbaUruchomien == 1)
+    connection.onState?(.armed)
+    #expect(queue.runCount == 1)
 
-    // Rozłączenie w trakcie lotu sondy: podbija pokolenieSondy i czyści stan.
-    polaczenie.onState?(.rozlaczony)
+    // Disconnect while the probe is in flight: bumps probeGeneration and clears state.
+    connection.onState?(.disconnected)
 
-    // Spóźniony wynik dociera dopiero teraz.
-    kolejka.odpal()
+    // The late result arrives only now.
+    queue.flush()
 
-    #expect(state.cel == nil)
-    #expect(state.bladSondy == nil)
+    #expect(state.target == nil)
+    #expect(state.probeError == nil)
 }
 
-// MARK: - Wyścig 2: nakładające się sondy
+// MARK: - Race 2: overlapping probes
 
-@Test @MainActor func drugaSondaZglaszaSieJakoZaleglaANieRownolegla() {
-    let polaczenie = FakeKapselConnection()
+@Test @MainActor func secondProbeQueuesAsPendingNotParallel() {
+    let connection = FakeDeviceConnection()
     let runner = FakeRunner(["10", "01"])
     let controller = MeetController(runner: runner)
-    let kolejka = TestowaKolejka()
-    let state = AppState(polaczenie: polaczenie, controller: controller, kolejka: kolejka)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
-    polaczenie.onState?(.uzbrojony)
-    #expect(kolejka.liczbaUruchomien == 1)
+    connection.onState?(.armed)
+    #expect(queue.runCount == 1)
 
-    // Druga prośba, zanim pierwsza sonda wróciła: ma zostać zaległością, nie
-    // wystartować równolegle.
-    state.odswiezCel()
-    #expect(kolejka.liczbaUruchomien == 1)
+    // A second request before the first probe returned: it should become
+    // pending, not start in parallel.
+    state.refreshTarget()
+    #expect(queue.runCount == 1)
 
-    // Dostarczenie pierwszej sondy odpala zaległą drugą automatycznie.
-    kolejka.odpal()
-    #expect(state.cel == ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false))
-    #expect(kolejka.liczbaUruchomien == 2)
+    // Delivering the first probe fires the pending second one automatically.
+    queue.flush()
+    #expect(state.target == ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false))
+    #expect(queue.runCount == 2)
 
-    kolejka.odpal()
-    #expect(state.cel == ProbeResult(browser: "Google Chrome", micMuted: false, cameraOff: true))
+    queue.flush()
+    #expect(state.target == ProbeResult(browser: "Google Chrome", micMuted: false, cameraOff: true))
 }
 
-// MARK: - Wyścig 3: odświeżenie po rozłączeniu
+// MARK: - Race 3: refresh after disconnect
 
-@Test @MainActor func odswiezenieProszoneOPoRozlaczeniuNieStartujeSondy() {
-    let polaczenie = FakeKapselConnection()
+@Test @MainActor func refreshRequestedAfterDisconnectDoesNotStartProbe() {
+    let connection = FakeDeviceConnection()
     let runner = FakeRunner(["10"])
     let controller = MeetController(runner: runner)
-    let kolejka = TestowaKolejka()
-    let state = AppState(polaczenie: polaczenie, controller: controller, kolejka: kolejka)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
-    polaczenie.onState?(.uzbrojony)
-    kolejka.odpal()
-    #expect(kolejka.liczbaUruchomien == 1)
+    connection.onState?(.armed)
+    queue.flush()
+    #expect(queue.runCount == 1)
 
-    polaczenie.onState?(.rozlaczony)
+    connection.onState?(.disconnected)
 
-    // Prośba o odświeżenie po rozłączeniu nie ma czego odpytywać.
-    state.odswiezCel()
+    // A refresh request after disconnect has nothing to poll.
+    state.refreshTarget()
 
-    #expect(kolejka.liczbaUruchomien == 1)
-    #expect(state.cel == nil)
+    #expect(queue.runCount == 1)
+    #expect(state.target == nil)
 }
 
-// MARK: - Wyścig 4: udana Akcja czyści poprzedni błąd
+// MARK: - Race 4: a successful Action clears a previous error
 
-@Test @MainActor func udanaAkcjaCzysciPoprzedniBladSondy() {
-    let polaczenie = FakeKapselConnection()
-    // Kolejność konsumpcji: pierwsza sonda pada na obu przeglądarkach (2
-    // wpisy), potem udana Akcja (1 wpis), potem udana druga sonda (1 wpis).
+@Test @MainActor func successfulActionClearsPreviousProbeError() {
+    let connection = FakeDeviceConnection()
+    // Consumption order: the first probe fails on both browsers (2 entries),
+    // then a successful Action (1 entry), then a successful second probe (1 entry).
     let runner = FakeRunner(["THROW", "THROW", "OK", "10"])
     let controller = MeetController(runner: runner)
-    let kolejka = TestowaKolejka()
-    let state = AppState(polaczenie: polaczenie, controller: controller, kolejka: kolejka)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
-    polaczenie.onState?(.uzbrojony)
-    kolejka.odpal()
-    #expect(state.bladSondy != nil)
+    connection.onState?(.armed)
+    queue.flush()
+    #expect(state.probeError != nil)
 
-    state.wykonaj(.microphone)
-    kolejka.odpal()  // dostarcza wynik Akcji, planuje opóźnione odświeżenie
-    kolejka.odpal()  // opóźnione odświeżenie startuje drugą sondę
-    kolejka.odpal()  // dostarcza wynik drugiej sondy
+    state.perform(.microphone)
+    queue.flush()  // delivers the Action's outcome, schedules the delayed refresh
+    queue.flush()  // the delayed refresh starts the second probe
+    queue.flush()  // delivers the second probe's outcome
 
-    #expect(state.bladSondy == nil)
-    #expect(state.ostatniaAkcja == "Mikrofon: przełączono")
+    #expect(state.probeError == nil)
+    #expect(state.lastAction == "Mikrofon: przełączono")
 }
 
-// MARK: - Finding 3: Akcja w locie jest porzucana, nie kolejkowana
+// MARK: - Finding 3: an Action in flight is dropped, not queued
 
-@Test @MainActor func akcjaWTrakcieInnejJestPomijanaANieKolejkowana() {
-    let polaczenie = FakeKapselConnection()
+@Test @MainActor func actionDuringAnotherIsSkippedNotQueued() {
+    let connection = FakeDeviceConnection()
     let runner = FakeRunner(["OK"])
     let controller = MeetController(runner: runner)
-    let kolejka = TestowaKolejka()
-    let state = AppState(polaczenie: polaczenie, controller: controller, kolejka: kolejka)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
-    state.wykonaj(.microphone)
-    state.wykonaj(.camera)
+    state.perform(.microphone)
+    state.perform(.camera)
 
-    // Druga Akcja nie ruszyła żadnego skryptu — została porzucona od razu.
-    #expect(kolejka.liczbaUruchomien == 1)
-    #expect(state.ostatniaAkcja.contains("pominięto"))
+    // The second Action didn't run any script — it was dropped immediately.
+    #expect(queue.runCount == 1)
+    #expect(state.lastAction.contains("pominięto"))
 
-    kolejka.odpal()
-    #expect(state.ostatniaAkcja == "Mikrofon: przełączono")
+    queue.flush()
+    #expect(state.lastAction == "Mikrofon: przełączono")
 }

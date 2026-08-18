@@ -1,5 +1,5 @@
-/// Przestrzeń nazw biblioteki. Wersja protokołu Kapsla, na którym opiera się
-/// `FrameParser` — podbij ją, jeśli format ramek się zmieni.
+/// Namespace for the library. Protocol version of the device that
+/// `FrameParser` relies on — bump it if the frame format changes.
 public enum TrikiMuteCore {
-    public static let wersjaProtokolu = 1
+    public static let protocolVersion = 1
 }

@@ -8,7 +8,7 @@ struct TrikiMuteApp: App {
         MenuBarExtra {
             MenuBarView(state: state)
         } label: {
-            Image(systemName: state.nazwaIkony)
+            Image(systemName: state.iconName)
         }
         .menuBarExtraStyle(.menu)
     }

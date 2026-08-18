@@ -1,37 +1,37 @@
 import Foundation
 import TrikiMuteCore
 
-/// Wykonuje AppleScript przez `NSAppleScript`.
+/// Runs AppleScript via `NSAppleScript`.
 ///
-/// Najczęstsze błędy, które tu wypływają:
-/// `-1743` — brak zgody na Automation w Ustawieniach systemowych,
-/// `-2700` / komunikat o JavaScript — wyłączone „Allow JavaScript from Apple
-/// Events" w menu `View → Developer` przeglądarki.
+/// The most common errors that surface here:
+/// `-1743` — no Automation permission in System Settings,
+/// `-2700` / a JavaScript-related message — "Allow JavaScript from Apple
+/// Events" disabled in the browser's `View → Developer` menu.
 final class AppleScriptRunner: ScriptRunner {
-    struct Blad: LocalizedError {
-        let kod: Int
-        let opis: String
-        var errorDescription: String? { "AppleScript \(kod): \(opis)" }
+    struct Failure: LocalizedError {
+        let code: Int
+        let message: String
+        var errorDescription: String? { "AppleScript \(code): \(message)" }
     }
 
     func run(_ source: String) throws -> String {
-        guard let skrypt = NSAppleScript(source: source) else {
-            throw Blad(kod: 0, opis: "Nie udało się zbudować skryptu")
+        guard let script = NSAppleScript(source: source) else {
+            throw Failure(code: 0, message: "Nie udało się zbudować skryptu")
         }
         var info: NSDictionary?
-        let wynik = skrypt.executeAndReturnError(&info)
+        let result = script.executeAndReturnError(&info)
         if let info {
-            throw Blad(
-                kod: info[NSAppleScript.errorNumber] as? Int ?? 0,
-                opis: info[NSAppleScript.errorMessage] as? String ?? "nieznany błąd"
+            throw Failure(
+                code: info[NSAppleScript.errorNumber] as? Int ?? 0,
+                message: info[NSAppleScript.errorMessage] as? String ?? "nieznany błąd"
             )
         }
-        guard let tekst = wynik.stringValue else {
-            // Brak wartości tekstowej to anomalia, nie odpowiedź. Zwrócenie
-            // "NONE" udawałoby brak rozmowy, czyli mylnie zapewniałoby,
-            // że wszystko jest w porządku.
-            throw Blad(kod: 0, opis: "Skrypt nie zwrócił wartości tekstowej")
+        guard let text = result.stringValue else {
+            // A missing string value is an anomaly, not an answer. Returning
+            // "NONE" would masquerade as no call in progress, i.e. falsely
+            // claim that everything is fine.
+            throw Failure(code: 0, message: "Skrypt nie zwrócił wartości tekstowej")
         }
-        return tekst
+        return text
     }
 }

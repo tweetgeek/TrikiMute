@@ -2,238 +2,247 @@ import Foundation
 import Observation
 import TrikiMuteCore
 
-/// Jedyne źródło prawdy dla interfejsu.
+/// The single source of truth for the UI.
 @MainActor
 @Observable
 final class AppState {
-    private(set) var stanKapsla: PolaczenieKapsla = .rozlaczony
-    private(set) var bateria: Int?
+    private(set) var deviceState: DeviceState = .disconnected
+    private(set) var battery: Int?
     private(set) var rssi: Int?
-    private(set) var cel: ProbeResult?
-    /// Ustawiane, gdy sonda w ogóle nie mogła sprawdzić Celu — najczęściej brak
-    /// zgody na Automation albo wyłączone wykonywanie JavaScriptu. Puste, gdy
-    /// sonda odpowiedziała, choćby brakiem Celu.
-    private(set) var bladSondy: String?
-    private(set) var ostatniaAkcja: String = "—"
-    private(set) var bladAutostartu: String?
+    private(set) var target: ProbeResult?
+    /// Set when the probe couldn't check the Target at all — most commonly
+    /// missing Automation permission or JavaScript execution disabled.
+    /// Empty when the probe answered, even if that answer was "no Target".
+    private(set) var probeError: String?
+    private(set) var lastAction: String = "—"
+    private(set) var loginItemError: String?
 
-    private let polaczenie: any KapselConnection
+    private let connection: any DeviceConnection
     private let controller: MeetController
-    private let kolejka: any SkryptowaKolejka
-    private var sonda: Timer?
-    private var sondaWToku = false
-    /// Akcja w locie. Naciśnięcia, które przychodzą, zanim poprzednia Akcja
-    /// wróci z kolejki, są porzucane, a nie kolejkowane — nieaktualne
-    /// przełączenie, wykonane z opóźnieniem po serii naciśnięć, jest gorsze
-    /// niż jego brak. Realny wyzwalacz: pierwsze uruchomienie, gdzie
-    /// zablokowane okno zgody na Automation zbiera naciśnięcia w kolejce,
-    /// a po kliknięciu „Zezwól" wszystkie odpalają się hurtem.
-    private var akcjaWToku = false
-    /// Sonda zgłoszona w trakcie innej. Nie ginie — ruszy zaraz po niej.
-    private var sondaZalegla = false
-    /// Numer pokolenia sondy. Wynik ze starego pokolenia jest ignorowany:
-    /// rozłączenie podbija numer, więc odpowiedź wysłana przed rozłączeniem
-    /// nie wpisze z powrotem danych urządzenia, którego już nie ma.
-    private var pokolenieSondy = 0
+    private let scriptQueue: any ScriptQueue
+    private var probeTimer: Timer?
+    private var probeInFlight = false
+    /// Action in flight. Presses that arrive before the previous Action
+    /// returns from the queue are dropped, not queued — a stale toggle,
+    /// executed with a delay after a burst of presses, is worse than not
+    /// executing at all. Real-world trigger: first launch, where a blocked
+    /// Automation permission dialog piles up presses in the queue, and they
+    /// all fire at once the moment the user clicks "Allow".
+    private var actionInFlight = false
+    /// A probe requested while another was in flight. It isn't lost — it
+    /// runs right after the current one finishes.
+    private var probePending = false
+    /// Probe generation number. A result from a stale generation is
+    /// ignored: disconnecting bumps the number, so a response sent before
+    /// the disconnect won't write back data for a device that's no longer
+    /// there.
+    private var probeGeneration = 0
 
-    /// Odstęp sondy. Sonda chodzi wyłącznie przy uzbrojonym Kapslu — poza
-    /// rozmową nie ma czego odpytywać.
-    private static let odstepSondy: TimeInterval = 3.0
+    /// Probe interval. The probe only runs while the device is Armed —
+    /// outside of a call there's nothing to poll.
+    private static let probeInterval: TimeInterval = 3.0
 
-    /// Skrypty wykonują się poza głównym wątkiem. `NSAppleScript` blokuje na
-    /// czas rozmowy z przeglądarką, a przy pierwszym użyciu także na czas
-    /// odpowiedzi użytkownika na pytanie o zgodę — na głównym wątku zamroziłoby
-    /// to pasek menu. Kolejka jest szeregowa, więc sonda i Akcje nie wchodzą
-    /// sobie w drogę. Stan zmieniamy wyłącznie po powrocie na główny wątek.
+    /// Scripts run off the main thread. `NSAppleScript` blocks for the
+    /// duration of the exchange with the browser, and on first use also for
+    /// the duration of the user's answer to the permission prompt — on the
+    /// main thread that would freeze the menu bar. The queue is serial, so
+    /// the probe and Actions don't step on each other. State is only mutated
+    /// after returning to the main thread.
     ///
-    /// `polaczenie`, `controller` i `kolejka` są parametrami inicjalizatora —
-    /// wyłącznie po to, żeby testy mogły podstawić atrapy zamiast prawdziwego
-    /// CoreBluetooth, AppleScriptu i wątków w tle. Wartości domyślne
-    /// odtwarzają dotychczasowe, produkcyjne połączenia, więc `AppState()` w
-    /// `TrikiMuteApp.swift` nie musi się zmienić.
+    /// `connection`, `controller`, and `scriptQueue` are initializer
+    /// parameters solely so that tests can substitute doubles for real
+    /// CoreBluetooth, AppleScript, and background threads. The defaults
+    /// reproduce the existing production wiring, so `AppState()` in
+    /// `TrikiMuteApp.swift` doesn't need to change.
     ///
-    /// `polaczenie` domyślnie `nil` zamiast `TrikiConnection()` wprost: wyrażenia
-    /// domyślne parametrów nie dziedziczą izolacji `@MainActor` inicjalizatora,
-    /// więc budowa `TrikiConnection` (klasy `@MainActor`) musi się odbyć w ciele
-    /// `init`, a nie w jego liście parametrów.
+    /// `connection` defaults to `nil` rather than `TrikiConnection()`
+    /// directly: parameter default expressions don't inherit the
+    /// initializer's `@MainActor` isolation, so constructing `TrikiConnection`
+    /// (a `@MainActor` class) has to happen in the body of `init`, not in its
+    /// parameter list.
     init(
-        polaczenie: (any KapselConnection)? = nil,
+        connection: (any DeviceConnection)? = nil,
         controller: MeetController = MeetController(runner: AppleScriptRunner()),
-        kolejka: any SkryptowaKolejka = DomyslnaKolejkaSkryptow(
-            kolejkaTla: DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
+        scriptQueue: any ScriptQueue = DefaultScriptQueue(
+            backgroundQueue: DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
         )
     ) {
-        let polaczenie = polaczenie ?? TrikiConnection()
-        self.polaczenie = polaczenie
+        let connection = connection ?? TrikiConnection()
+        self.connection = connection
         self.controller = controller
-        self.kolejka = kolejka
-        polaczenie.onState = { [weak self] stan in
+        self.scriptQueue = scriptQueue
+        connection.onState = { [weak self] state in
             guard let self else { return }
-            stanKapsla = stan
-            stan == .uzbrojony ? uruchomSonde() : zatrzymajSonde()
+            deviceState = state
+            state == .armed ? startProbing() : stopProbing()
         }
-        polaczenie.onBattery = { [weak self] in self?.bateria = $0 }
-        polaczenie.onRSSI = { [weak self] in self?.rssi = $0 }
-        polaczenie.onEvent = { [weak self] zdarzenie in
-            self?.wykonaj(zdarzenie == .press ? .microphone : .camera)
+        connection.onBattery = { [weak self] in self?.battery = $0 }
+        connection.onRSSI = { [weak self] in self?.rssi = $0 }
+        connection.onEvent = { [weak self] event in
+            self?.perform(event == .press ? .microphone : .camera)
         }
-        polaczenie.start()
+        connection.start()
     }
 
-    /// Nazwa symbolu SF dla ikony w pasku menu.
-    var nazwaIkony: String {
-        switch stanKapsla {
-        case .blad: return "exclamationmark.triangle"
-        case .rozlaczony, .szukam: return "circle.dotted"
-        case .uzbrojony:
-            if bladSondy != nil { return "exclamationmark.triangle" }
-            return cel?.micMuted == true ? "mic.slash.fill" : "mic.fill"
-        }
-    }
-
-    var opisKapsla: String {
-        switch stanKapsla {
-        case .rozlaczony: return "Kapsel rozłączony"
-        case .szukam: return "Szukam Kapsla — naciśnij przycisk, żeby go obudzić"
-        case .uzbrojony: return "Kapsel uzbrojony"
-        case .blad(let opis): return opis
+    /// SF Symbol name for the menu bar icon.
+    var iconName: String {
+        switch deviceState {
+        case .error: return "exclamationmark.triangle"
+        case .disconnected, .searching: return "circle.dotted"
+        case .armed:
+            if probeError != nil { return "exclamationmark.triangle" }
+            return target?.micMuted == true ? "mic.slash.fill" : "mic.fill"
         }
     }
 
-    var opisCelu: String {
-        if let bladSondy { return "Nie mogę sprawdzić Celu: \(bladSondy)" }
-        guard let cel else { return "Brak Celu — nie ma czego wyciszyć" }
-        return "\(cel.browser): mikrofon \(cel.micMuted ? "wyciszony" : "aktywny"), "
-            + "kamera \(cel.cameraOff ? "wyłączona" : "włączona")"
-    }
-
-    var opisAutostartu: String {
-        switch LoginItem.stan {
-        case .wlaczony: return "✓ Uruchamiaj przy logowaniu"
-        case .wylaczony: return "Uruchamiaj przy logowaniu"
-        case .wymagaZatwierdzenia: return "Uruchamiaj przy logowaniu — zatwierdź w Ustawieniach"
+    var deviceDescription: String {
+        switch deviceState {
+        case .disconnected: return "Kapsel rozłączony"
+        case .searching: return "Szukam Kapsla — naciśnij przycisk, żeby go obudzić"
+        case .armed: return "Kapsel uzbrojony"
+        case .error(let message): return message
         }
     }
 
-    func wykonaj(_ action: MeetAction) {
-        guard !akcjaWToku else {
-            // Cisza tutaj odtworzyłaby dokładnie tę klasę defektu, którą ta
-            // gałąź eliminowała: naciśnięcie ma być słyszalnie potwierdzone,
-            // nawet gdy zostaje porzucone.
-            let wynik = ActionOutcome.failed("poprzednia Akcja jeszcze trwa, pominięto")
-            Feedback.zagraj(wynik)
-            ostatniaAkcja = opis(action, wynik)
+    var targetDescription: String {
+        if let probeError { return "Nie mogę sprawdzić Celu: \(probeError)" }
+        guard let target else { return "Brak Celu — nie ma czego wyciszyć" }
+        return "\(target.browser): mikrofon \(target.micMuted ? "wyciszony" : "aktywny"), "
+            + "kamera \(target.cameraOff ? "wyłączona" : "włączona")"
+    }
+
+    var loginItemDescription: String {
+        switch LoginItem.status {
+        case .enabled: return "✓ Uruchamiaj przy logowaniu"
+        case .disabled: return "Uruchamiaj przy logowaniu"
+        case .requiresApproval: return "Uruchamiaj przy logowaniu — zatwierdź w Ustawieniach"
+        }
+    }
+
+    func perform(_ action: MeetAction) {
+        guard !actionInFlight else {
+            // Silence here would reproduce exactly the class of defect this
+            // branch eliminates: a press has to be audibly acknowledged even
+            // when it gets dropped.
+            let outcome = ActionOutcome.failed("poprzednia Akcja jeszcze trwa, pominięto")
+            Feedback.play(outcome)
+            lastAction = describe(action, outcome)
             return
         }
-        akcjaWToku = true
-        // NSWorkspace pytamy jeszcze na głównym wątku.
-        let przegladarki = BrowserOrder.uporzadkowane()
+        actionInFlight = true
+        // NSWorkspace is still queried on the main thread here.
+        let browsers = BrowserOrder.ordered()
         let controller = self.controller
-        kolejka.uruchom(
-            tlo: { controller.perform(action, browsers: przegladarki) },
-            glowny: { [weak self] wynik in
+        scriptQueue.run(
+            background: { controller.perform(action, browsers: browsers) },
+            main: { [weak self] outcome in
                 guard let self else { return }
-                akcjaWToku = false
-                Feedback.zagraj(wynik)
-                ostatniaAkcja = opis(action, wynik)
-                // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt
-                // musi poczekać, inaczej zobaczymy stan sprzed Akcji.
-                kolejka.poCzasie(0.3) { [weak self] in
-                    self?.odswiezCel()
+                actionInFlight = false
+                Feedback.play(outcome)
+                lastAction = describe(action, outcome)
+                // Meet updates the DOM asynchronously after the click — the
+                // read has to wait, otherwise we'd see the state from before
+                // the Action.
+                scriptQueue.afterDelay(0.3) { [weak self] in
+                    self?.refreshTarget()
                 }
             }
         )
     }
 
-    func zapomnijKapsel() {
-        polaczenie.forget()
+    func forgetDevice() {
+        connection.forget()
     }
 
-    func przelaczAutostart() {
-        bladAutostartu = LoginItem.przelacz()
+    func toggleLoginItem() {
+        loginItemError = LoginItem.toggle()
     }
 
-    private func opis(_ action: MeetAction, _ wynik: ActionOutcome) -> String {
+    private func describe(_ action: MeetAction, _ outcome: ActionOutcome) -> String {
         let co = action == .microphone ? "Mikrofon" : "Kamera"
-        switch wynik {
+        switch outcome {
         case .performed: return "\(co): przełączono"
         case .noTarget: return "\(co): brak Celu"
-        case .failed(let blad): return "\(co): błąd — \(blad)"
+        case .failed(let message): return "\(co): błąd — \(message)"
         }
     }
 
-    private func uruchomSonde() {
-        guard sonda == nil else { return }
-        odswiezCel()
-        sonda = Timer.scheduledTimer(withTimeInterval: Self.odstepSondy, repeats: true) { _ in
-            Task { @MainActor [weak self] in self?.odswiezCel() }
+    private func startProbing() {
+        guard probeTimer == nil else { return }
+        refreshTarget()
+        probeTimer = Timer.scheduledTimer(withTimeInterval: Self.probeInterval, repeats: true) { _ in
+            Task { @MainActor [weak self] in self?.refreshTarget() }
         }
     }
 
-    private func zatrzymajSonde() {
-        sonda?.invalidate()
-        sonda = nil
-        cel = nil
+    private func stopProbing() {
+        probeTimer?.invalidate()
+        probeTimer = nil
+        target = nil
         rssi = nil
-        bladSondy = nil
-        sondaWToku = false
-        sondaZalegla = false
-        // Unieważnia sondę będącą w locie — jej wynik dotyczy stanu sprzed
-        // rozłączenia i nie ma prawa wrócić na ekran.
-        pokolenieSondy += 1
+        probeError = nil
+        probeInFlight = false
+        probePending = false
+        // Invalidates any probe in flight — its result concerns state from
+        // before the disconnect and has no business coming back to the
+        // screen.
+        probeGeneration += 1
     }
 
-    /// Jeden przebieg sondy: gdzie jest Cel, w jakim jest stanie i jak mocny
-    /// jest sygnał Kapsla. Siła sygnału przychodzi asynchronicznie przez onRSSI.
+    /// One probe cycle: where the Target is, what state it's in, and how
+    /// strong the device's signal is. Signal strength arrives asynchronously
+    /// via onRSSI.
     ///
-    /// Sonda nie może się piętrzyć: gdyby przeglądarka się zawiesiła, timer co
-    /// 3 sekundy dokładałby kolejne wywołania bez końca. Ale nie może też
-    /// gubić zgłoszeń — odświeżenie po Akcji jest celowe i zniknięcie go
-    /// zostawiałoby na ekranie stan sprzed Akcji aż do następnego cyklu.
-    /// Stąd zaległość: w kolejce czeka najwyżej jedna sonda i rusza od razu
-    /// po bieżącej.
+    /// The probe must not pile up: if the browser hung, a timer firing every
+    /// 3 seconds would keep stacking calls forever. But it also must not
+    /// drop requests — a refresh after an Action is deliberate, and losing
+    /// it would leave the pre-Action state on screen until the next cycle.
+    /// Hence the pending flag: at most one probe waits in the queue, and it
+    /// starts right after the current one.
     ///
-    /// Widoczność pakietowa (nie `private`) celowo — testy `AppState`
-    /// wywołują tę metodę wprost, żeby przypiąć wyścigi bez czekania na
-    /// timer albo prawdziwe rozłączenie BLE.
-    func odswiezCel() {
-        // Sonda ma sens wyłącznie przy uzbrojonym Kapslu. Bez tej bramki
-        // odświeżenie opóźnione po Akcji mogłoby wystartować już po
-        // rozłączeniu i wpisać Cel dla urządzenia, którego nie ma.
-        guard stanKapsla == .uzbrojony else { return }
-        guard !sondaWToku else {
-            sondaZalegla = true
+    /// Package visibility (not `private`) is deliberate — `AppState` tests
+    /// call this method directly, to pin down races without waiting on a
+    /// timer or a real BLE disconnect.
+    func refreshTarget() {
+        // The probe only makes sense while the device is Armed. Without this
+        // guard, a refresh delayed after an Action could start after the
+        // disconnect and write a Target for a device that's no longer there.
+        guard deviceState == .armed else { return }
+        guard !probeInFlight else {
+            probePending = true
             return
         }
-        sondaWToku = true
-        sondaZalegla = false
-        pokolenieSondy += 1
-        let moje = pokolenieSondy
-        let przegladarki = BrowserOrder.uporzadkowane()
+        probeInFlight = true
+        probePending = false
+        probeGeneration += 1
+        let generation = probeGeneration
+        let browsers = BrowserOrder.ordered()
         let controller = self.controller
-        polaczenie.odczytajRSSI()
-        kolejka.uruchom(
-            tlo: { controller.probe(browsers: przegladarki) },
-            glowny: { [weak self] wynik in
+        connection.readRSSI()
+        scriptQueue.run(
+            background: { controller.probe(browsers: browsers) },
+            main: { [weak self] outcome in
                 guard let self else { return }
-                sondaWToku = false
-                // Wynik przedawniony: w międzyczasie sonda została zatrzymana
-                // albo wystartowała nowsza. Nie ma prawa niczego nadpisać.
-                guard moje == pokolenieSondy else { return }
-                switch wynik {
-                case .target(let cel):
-                    self.cel = cel
-                    bladSondy = nil
+                probeInFlight = false
+                // Stale result: the probe was stopped, or a newer one
+                // started, in the meantime. It has no business overwriting
+                // anything.
+                guard generation == probeGeneration else { return }
+                switch outcome {
+                case .target(let target):
+                    self.target = target
+                    probeError = nil
                 case .noTarget:
-                    cel = nil
-                    bladSondy = nil
-                case .failed(let opis):
-                    // Awaria sondy nie może udawać braku rozmowy — pasek menu
-                    // ma pokazać przyczynę, a nie „wszystko gra".
-                    cel = nil
-                    bladSondy = opis
+                    target = nil
+                    probeError = nil
+                case .failed(let message):
+                    // A probe failure must not masquerade as no call in
+                    // progress — the menu bar has to show the cause, not
+                    // "everything's fine".
+                    target = nil
+                    probeError = message
                 }
-                if sondaZalegla { odswiezCel() }
+                if probePending { refreshTarget() }
             }
         )
     }

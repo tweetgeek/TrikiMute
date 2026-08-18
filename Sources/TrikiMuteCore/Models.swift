@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stan przycisku Kapsla odczytany z jednej ramki IMU.
+/// Button state of the device, read from a single IMU frame.
 public struct ButtonSample: Equatable, Sendable {
     public let pressed: Bool
     public let timestamp: TimeInterval
@@ -11,15 +11,15 @@ public struct ButtonSample: Equatable, Sendable {
     }
 }
 
-/// Zdarzenie rozpoznane z sekwencji stanów przycisku.
+/// Event recognized from a sequence of button states.
 public enum ButtonEvent: Equatable, Sendable {
-    /// Naciśnięcie — krótkie wciśnięcie i puszczenie. Odpowiada mikrofonowi.
+    /// Press — a short press and release. Corresponds to the microphone.
     case press
-    /// Przytrzymanie — wciśnięcie ponad próg czasowy. Odpowiada kamerze.
+    /// Hold — held down past the time threshold. Corresponds to the camera.
     case hold
 }
 
-/// Akcja wykonywana w Celu.
+/// Action performed on the target.
 public enum MeetAction: Equatable, Sendable {
     case microphone
     case camera

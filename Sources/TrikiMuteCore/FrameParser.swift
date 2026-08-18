@@ -1,55 +1,56 @@
 import Foundation
 
-/// Składa 14-bajtowe ramki IMU ze strumienia powiadomień BLE i wyciąga z nich
-/// stan przycisku. Dane inercyjne są odrzucane — TrikiMute ich nie używa.
+/// Assembles 14-byte IMU frames from the BLE notification stream and
+/// extracts button state from them. Inertial data is discarded — TrikiMute
+/// doesn't use it.
 ///
-/// Kapsel nadaje burstami, więc jedno powiadomienie może zawierać wiele ramek
-/// albo urwać się w połowie ramki. Parser resynchronizuje się po nagłówku.
+/// The device sends in bursts, so a single notification may contain multiple
+/// frames or cut off mid-frame. The parser resynchronizes on the header.
 public struct FrameParser {
-    /// Długość pełnej ramki IMU w bajtach.
-    private static let dlugoscRamki = 14
-    /// Pierwszy bajt nagłówka. Drugi to flaga przycisku: 0x00 lub 0x01.
-    private static let znacznik: UInt8 = 0x22
+    /// Length of a full IMU frame in bytes.
+    private static let frameLength = 14
+    /// First header byte. The second is the button flag: 0x00 or 0x01.
+    private static let marker: UInt8 = 0x22
 
-    private var bufor: [UInt8] = []
+    private var buffer: [UInt8] = []
 
     public init() {}
 
-    /// Rozmiar wewnętrznego bufora. Wyłącznie do testów odporności.
-    var rozmiarBufora: Int { bufor.count }
+    /// Size of the internal buffer. For resilience tests only.
+    var bufferSize: Int { buffer.count }
 
-    /// Dokłada bajty z jednego powiadomienia i zwraca stany przycisku ze
-    /// wszystkich ramek, które udało się z nich złożyć.
+    /// Appends bytes from one notification and returns the button states
+    /// from every frame that could be assembled from them.
     public mutating func consume(_ bytes: [UInt8], at timestamp: TimeInterval) -> [ButtonSample] {
-        bufor.append(contentsOf: bytes)
-        var wynik: [ButtonSample] = []
+        buffer.append(contentsOf: bytes)
+        var result: [ButtonSample] = []
 
         while true {
-            guard let start = indeksNaglowka() else {
-                // Nic, co mogłoby być początkiem ramki — zachowaj tylko ogon,
-                // który jeszcze może się okazać początkiem znacznika.
-                if bufor.count > Self.dlugoscRamki {
-                    bufor.removeFirst(bufor.count - 1)
+            guard let start = headerIndex() else {
+                // Nothing that could be the start of a frame — keep only the
+                // tail, which might still turn out to be the start of a marker.
+                if buffer.count > Self.frameLength {
+                    buffer.removeFirst(buffer.count - 1)
                 }
                 break
             }
-            if start > 0 { bufor.removeFirst(start) }
-            guard bufor.count >= Self.dlugoscRamki else { break }
+            if start > 0 { buffer.removeFirst(start) }
+            guard buffer.count >= Self.frameLength else { break }
 
-            wynik.append(ButtonSample(pressed: bufor[1] == 0x01, timestamp: timestamp))
-            bufor.removeFirst(Self.dlugoscRamki)
+            result.append(ButtonSample(pressed: buffer[1] == 0x01, timestamp: timestamp))
+            buffer.removeFirst(Self.frameLength)
         }
 
-        return wynik
+        return result
     }
 
-    /// Indeks pierwszego bajtu, od którego może zaczynać się poprawna ramka.
-    private func indeksNaglowka() -> Int? {
-        for i in 0..<bufor.count where bufor[i] == Self.znacznik {
-            // Drugi bajt musi być flagą przycisku. Jeśli go jeszcze nie ma,
-            // czekamy na kolejne powiadomienie zamiast odrzucać znacznik.
-            if i + 1 >= bufor.count { return i }
-            if bufor[i + 1] == 0x00 || bufor[i + 1] == 0x01 { return i }
+    /// Index of the first byte from which a valid frame could start.
+    private func headerIndex() -> Int? {
+        for i in 0..<buffer.count where buffer[i] == Self.marker {
+            // The second byte must be the button flag. If it isn't there yet,
+            // wait for the next notification instead of discarding the marker.
+            if i + 1 >= buffer.count { return i }
+            if buffer[i + 1] == 0x00 || buffer[i + 1] == 0x01 { return i }
         }
         return nil
     }

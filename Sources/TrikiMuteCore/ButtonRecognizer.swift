@@ -1,13 +1,13 @@
 import Foundation
 
-/// Rozpoznaje Naciśnięcia i Przytrzymania z ciągu stanów przycisku.
+/// Recognizes Presses and Holds from a stream of button states.
 ///
-/// Kapsel nadaje *poziom* przycisku w każdej ramce (~104 Hz), a nie zdarzenia,
-/// więc rozpoznawanie polega na wykrywaniu zboczy. Przytrzymanie jest zgłaszane
-/// w chwili przekroczenia progu, a nie przy puszczeniu — dzięki temu sprzężenie
-/// zwrotne przychodzi od razu, bez czekania, aż zdejmiesz palec.
+/// The device transmits the button's *level* on every frame (~104 Hz), not
+/// events, so recognition works by detecting edges. A Hold is reported the
+/// moment the threshold is crossed, not on release — so feedback arrives
+/// immediately, without waiting for you to lift your finger.
 public struct ButtonRecognizer {
-    /// Stałe czasowe rozpoznawania. Wszystkie w sekundach.
+    /// Recognition time constants. All in seconds.
     public struct Tuning: Sendable {
         public let hold: TimeInterval
         public let debounce: TimeInterval
@@ -19,53 +19,53 @@ public struct ButtonRecognizer {
             self.cooldown = cooldown
         }
 
-        public static let domyslne = Tuning(hold: 0.4, debounce: 0.03, cooldown: 0.3)
+        public static let standard = Tuning(hold: 0.4, debounce: 0.03, cooldown: 0.3)
     }
 
     private let tuning: Tuning
-    private var wcisniety = false
-    private var poczatekWcisniecia: TimeInterval = 0
-    private var holdZgloszony = false
-    private var ostatnieZbocze: TimeInterval = -.greatestFiniteMagnitude
-    private var ostatnieZdarzenie: TimeInterval = -.greatestFiniteMagnitude
+    private var isPressed = false
+    private var pressStart: TimeInterval = 0
+    private var holdReported = false
+    private var lastEdge: TimeInterval = -.greatestFiniteMagnitude
+    private var lastEvent: TimeInterval = -.greatestFiniteMagnitude
 
-    public init(tuning: Tuning = .domyslne) {
+    public init(tuning: Tuning = .standard) {
         self.tuning = tuning
     }
 
-    /// Zwraca zdarzenie, jeśli ta próbka je domyka.
+    /// Returns an event if this sample completes one.
     public mutating func consume(_ sample: ButtonSample) -> ButtonEvent? {
-        if sample.pressed != wcisniety {
-            guard sample.timestamp - ostatnieZbocze >= tuning.debounce else {
-                return nil  // drganie styku
+        if sample.pressed != isPressed {
+            guard sample.timestamp - lastEdge >= tuning.debounce else {
+                return nil  // contact bounce
             }
-            ostatnieZbocze = sample.timestamp
-            wcisniety = sample.pressed
+            lastEdge = sample.timestamp
+            isPressed = sample.pressed
 
-            if wcisniety {
-                poczatekWcisniecia = sample.timestamp
-                holdZgloszony = false
+            if isPressed {
+                pressStart = sample.timestamp
+                holdReported = false
                 return nil
             }
-            // Puszczenie. Przytrzymanie już zgłoszone — nie dubluj zdarzenia.
-            guard !holdZgloszony else { return nil }
-            guard sample.timestamp - poczatekWcisniecia < tuning.hold else { return nil }
-            return wyemituj(.press, at: sample.timestamp)
+            // Release. Hold already reported — don't duplicate the event.
+            guard !holdReported else { return nil }
+            guard sample.timestamp - pressStart < tuning.hold else { return nil }
+            return emit(.press, at: sample.timestamp)
         }
 
-        guard wcisniety, !holdZgloszony else { return nil }
-        guard sample.timestamp - poczatekWcisniecia >= tuning.hold else { return nil }
-        // Flagę zapalamy dopiero po faktycznej emisji. Gdyby zapalała się
-        // wcześniej, Przytrzymanie stłumione przez cooldown przepadałoby
-        // bezpowrotnie zamiast wyjść z opóźnieniem.
-        guard let zdarzenie = wyemituj(.hold, at: sample.timestamp) else { return nil }
-        holdZgloszony = true
-        return zdarzenie
+        guard isPressed, !holdReported else { return nil }
+        guard sample.timestamp - pressStart >= tuning.hold else { return nil }
+        // The flag is only set after the event is actually emitted. If it were
+        // set earlier, a Hold suppressed by the cooldown would be lost for
+        // good instead of arriving later.
+        guard let event = emit(.hold, at: sample.timestamp) else { return nil }
+        holdReported = true
+        return event
     }
 
-    private mutating func wyemituj(_ event: ButtonEvent, at timestamp: TimeInterval) -> ButtonEvent? {
-        guard timestamp - ostatnieZdarzenie >= tuning.cooldown else { return nil }
-        ostatnieZdarzenie = timestamp
+    private mutating func emit(_ event: ButtonEvent, at timestamp: TimeInterval) -> ButtonEvent? {
+        guard timestamp - lastEvent >= tuning.cooldown else { return nil }
+        lastEvent = timestamp
         return event
     }
 }

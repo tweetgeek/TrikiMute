@@ -1,12 +1,12 @@
 import Foundation
 
-/// Wykonawca skryptów. Produkcyjna implementacja opakowuje `NSAppleScript`,
-/// testowa zwraca zaprogramowane odpowiedzi.
+/// Executor for scripts. The production implementation wraps `NSAppleScript`,
+/// the test one returns programmed responses.
 public protocol ScriptRunner {
     func run(_ source: String) throws -> String
 }
 
-/// Gdzie jest Cel i w jakim jest stanie.
+/// Where the Target is and what state it's in.
 public struct ProbeResult: Equatable, Sendable {
     public let browser: String
     public let micMuted: Bool
@@ -19,25 +19,26 @@ public struct ProbeResult: Equatable, Sendable {
     }
 }
 
-/// Wynik Akcji. Rozróżnienie `noTarget` od `failed` jest celowe: pierwsze
-/// znaczy „nie ma czego wyciszyć", drugie „miałem co zrobić i nie wyszło".
+/// Result of an Action. The distinction between `noTarget` and `failed` is
+/// deliberate: the first means "there's nothing to mute", the second means
+/// "I had something to do and it didn't work".
 public enum ActionOutcome: Equatable, Sendable {
     case performed
     case noTarget
     case failed(String)
 }
 
-/// Wynik sondy. To samo rozróżnienie co w `ActionOutcome` i z tego samego
-/// powodu: gdyby awaria zwracała „brak Celu", pasek menu twierdziłby, że
-/// wszystko gra, podczas gdy w rzeczywistości cofnięto zgodę na Automation
-/// albo wyłączono wykonywanie JavaScriptu w przeglądarce.
+/// Result of a probe. Same distinction as in `ActionOutcome`, for the same
+/// reason: if a failure were reported as "no target", the menu bar would
+/// claim everything is fine while Automation access had actually been
+/// revoked, or JavaScript execution disabled in the browser.
 public enum ProbeOutcome: Equatable, Sendable {
     case target(ProbeResult)
     case noTarget
     case failed(String)
 }
 
-/// Steruje mikrofonem i kamerą w Celu.
+/// Controls the microphone and camera in the Target.
 public struct MeetController {
     private let runner: ScriptRunner
 
@@ -45,48 +46,49 @@ public struct MeetController {
         self.runner = runner
     }
 
-    /// Szuka Celu w podanych przeglądarkach, w kolejności. Zwraca stan
-    /// pierwszej karty, w której jest komplet przycisków; jeśli żadna nie ma
-    /// Celu, rozróżnia „nigdzie nie ma rozmowy" od „nie dało się sprawdzić".
+    /// Looks for the Target in the given browsers, in order. Returns the
+    /// state of the first tab that has a full set of buttons; if none has a
+    /// Target, distinguishes "no call anywhere" from "couldn't check".
     public func probe(browsers: [String]) -> ProbeOutcome {
-        var ostatniBlad: String?
+        var lastError: String?
         for browser in browsers {
-            let skrypt = MeetScripts.appleScript(
+            let script = MeetScripts.appleScript(
                 browser: browser,
                 javascript: MeetScripts.probeJS()
             )
             do {
-                let odpowiedz = try runner.run(skrypt)
-                // Sentinel „NONE" ma cztery znaki, więc odpada tu naturalnie.
-                guard odpowiedz.count == 2 else { continue }
-                let znaki = Array(odpowiedz)
+                let response = try runner.run(script)
+                // The "NONE" sentinel is four characters long, so it's
+                // naturally excluded here.
+                guard response.count == 2 else { continue }
+                let chars = Array(response)
                 return .target(ProbeResult(
                     browser: browser,
-                    micMuted: znaki[0] == "1",
-                    cameraOff: znaki[1] == "1"
+                    micMuted: chars[0] == "1",
+                    cameraOff: chars[1] == "1"
                 ))
             } catch {
-                ostatniBlad = String(describing: error)
+                lastError = String(describing: error)
             }
         }
-        if let ostatniBlad { return .failed(ostatniBlad) }
+        if let lastError { return .failed(lastError) }
         return .noTarget
     }
 
-    /// Wykonuje Akcję w pierwszej przeglądarce, w której jest Cel.
+    /// Performs an Action in the first browser that has a Target.
     public func perform(_ action: MeetAction, browsers: [String]) -> ActionOutcome {
-        var ostatniBlad: String?
+        var lastError: String?
         for browser in browsers {
             do {
-                let odpowiedz = try runner.run(
+                let response = try runner.run(
                     MeetScripts.appleScript(browser: browser, javascript: MeetScripts.toggleJS(action))
                 )
-                if odpowiedz == "OK" { return .performed }
+                if response == "OK" { return .performed }
             } catch {
-                ostatniBlad = String(describing: error)
+                lastError = String(describing: error)
             }
         }
-        if let ostatniBlad { return .failed(ostatniBlad) }
+        if let lastError { return .failed(lastError) }
         return .noTarget
     }
 }

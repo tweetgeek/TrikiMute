@@ -1,77 +1,79 @@
 import Foundation
 
-/// Skrypty sterujące rozmową Google Meet.
+/// Scripts that control the Google Meet call.
 ///
-/// Meet nie ma API, a syntetyczny skrót klawiszowy nie zadziała, bo obsługa
-/// skrótów reaguje wyłącznie na zaufane zdarzenia — dlatego klikamy realny
-/// przycisk w DOM. To jedyne miejsce w kodzie, w którym wolno wymieniać
-/// selektory DOM.
+/// Meet has no API, and a synthetic keyboard shortcut won't work because
+/// shortcut handling only reacts to trusted events — so we click the actual
+/// button in the DOM instead. This is the only place in the code where DOM
+/// selectors are allowed to appear.
 public enum MeetScripts {
-    /// Atrybut, po którym rozpoznajemy przyciski mikrofonu i kamery.
-    /// Świadomie nie `aria-label` — etykieta jest tłumaczona i rozjechałaby się
-    /// przy zmianie języka interfejsu.
+    /// The attribute used to recognize the microphone and camera buttons.
+    /// Deliberately not `aria-label` — that label is translated and would
+    /// drift out of sync with a change of interface language.
     public static let buttonSelector = "[data-is-muted]"
 
-    /// Pozycje przycisków w wyniku `querySelectorAll`. Wartości potwierdzone
-    /// spikiem z Task 1 (`docs/findings/2026-08-12-meet-dom.md`).
+    /// Button positions in the `querySelectorAll` result. Values confirmed
+    /// by the Task 1 spike (`docs/findings/2026-08-12-meet-dom.md`).
     public static let micIndex = 0
     public static let cameraIndex = 1
 
-    /// Fragment JS wspólny dla sondy i akcji. Zwraca `NONE`, gdy w karcie nie
-    /// ma kompletu przycisków — to jest sygnał „brak Celu".
-    private static let preambula = """
+    /// JS fragment shared by the probe and the action. Returns `NONE` when
+    /// the tab doesn't have a full set of buttons — that's the signal for
+    /// "no target".
+    private static let preamble = """
     var b=document.querySelectorAll('\(buttonSelector)');if(b.length<2)return 'NONE';
     """
 
-    /// Zwraca dwa znaki: stan mikrofonu i kamery, gdzie 1 oznacza wyłączone.
+    /// Returns two characters: microphone and camera state, where 1 means off.
     public static func probeJS() -> String {
         """
-        (function(){\(preambula)\
+        (function(){\(preamble)\
         var f=function(e){return e.getAttribute('data-is-muted')==='true'?'1':'0'};\
         return f(b[\(micIndex)])+f(b[\(cameraIndex)])})()
         """
     }
 
-    /// Klika przycisk odpowiadający akcji. Zwraca `OK` albo `NONE`.
+    /// Clicks the button matching the action. Returns `OK` or `NONE`.
     public static func toggleJS(_ action: MeetAction) -> String {
         let index = action == .microphone ? micIndex : cameraIndex
         return """
-        (function(){\(preambula)\
+        (function(){\(preamble)\
         b[\(index)].click();return 'OK'})()
         """
     }
 
-    /// Escapuje tekst wstawiany do literału tekstowego AppleScript.
-    /// Bez tego cudzysłów rozerwałby łańcuch, a odwrotny ukośnik zostałby
-    /// zjedzony przez AppleScript, zanim JavaScript zdążyłby go zobaczyć.
-    /// Kolejność ma znaczenie: najpierw ukośniki, potem cudzysłowy.
-    private static func escapuj(_ tekst: String) -> String {
-        tekst
+    /// Escapes text inserted into an AppleScript string literal.
+    /// Without this, a quote would break the string, and a backslash would
+    /// get consumed by AppleScript before JavaScript ever saw it.
+    /// Order matters: backslashes first, then quotes.
+    private static func escaped(_ text: String) -> String {
+        text
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    /// Opakowuje JS w skrypt szukający Celu wśród kart danej przeglądarki.
-    /// Karta nie musi być aktywna ani na wierzchu — to jest cały sens Apple
-    /// Events zamiast skrótu klawiszowego.
+    /// Wraps the JS in a script that searches for the Target among a given
+    /// browser's tabs. The tab doesn't need to be active or frontmost —
+    /// that's the whole point of using Apple Events instead of a keyboard
+    /// shortcut.
     ///
-    /// Oba wstawiane teksty są escapowane, żeby funkcja była poprawna dla
-    /// dowolnego wejścia, a nie tylko dla generatorów trzymających się
-    /// apostrofów.
-    /// Przeglądarka zawieszona na `execute … javascript` blokowałaby kolejkę
-    /// skryptów aż do domyślnego, 60-sekundowego limitu AppleScriptu. Ten
-    /// timeout sprowadza to do 5 sekund, więc zawieszona przeglądarka
-    /// ujawnia się jako `.failed` (i słyszalne `Basso`) zamiast cichego zwisu.
+    /// Both inserted texts are escaped, so the function is correct for
+    /// arbitrary input rather than just for generators that stick to
+    /// apostrophes.
+    /// A browser hung on `execute … javascript` would block the script
+    /// queue up to AppleScript's default 60-second limit. This timeout
+    /// brings that down to 5 seconds, so a hung browser surfaces as
+    /// `.failed` (and an audible `Basso`) instead of a silent stall.
     public static func appleScript(browser: String, javascript: String) -> String {
         """
-        tell application "\(escapuj(browser))"
+        tell application "\(escaped(browser))"
             with timeout of 5 seconds
                 if it is not running then return "NONE"
                 repeat with w in windows
                     repeat with t in tabs of w
                         if URL of t contains "meet.google.com" then
-                            set wynik to execute t javascript "\(escapuj(javascript))"
-                            if wynik is not "NONE" then return wynik
+                            set result to execute t javascript "\(escaped(javascript))"
+                            if result is not "NONE" then return result
                         end if
                     end repeat
                 end repeat

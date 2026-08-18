@@ -1,16 +1,16 @@
 import AppKit
 
-/// Kolejność odpytywania przeglądarek. Ta na wierzchu idzie pierwsza — jeśli
-/// masz otwarte dwie rozmowy, wygrywa ta, na którą właśnie patrzysz.
+/// Order in which browsers are polled. The one on top goes first — if you
+/// have two calls open, the one you're actually looking at wins.
 enum BrowserOrder {
-    static let wszystkie = ["Google Chrome", "Brave Browser"]
+    static let all = ["Google Chrome", "Brave Browser"]
 
-    /// Nazwy aplikacji dla AppleScript, z aktywną przeglądarką na początku.
-    static func uporzadkowane() -> [String] {
-        guard let aktywna = NSWorkspace.shared.frontmostApplication?.localizedName,
-              wszystkie.contains(aktywna) else {
-            return wszystkie
+    /// Application names for AppleScript, with the frontmost browser first.
+    static func ordered() -> [String] {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName,
+              all.contains(frontmost) else {
+            return all
         }
-        return [aktywna] + wszystkie.filter { $0 != aktywna }
+        return [frontmost] + all.filter { $0 != frontmost }
     }
 }

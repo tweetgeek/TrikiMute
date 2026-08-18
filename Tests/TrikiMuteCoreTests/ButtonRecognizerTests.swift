@@ -2,96 +2,96 @@ import Foundation
 import Testing
 @testable import TrikiMuteCore
 
-/// Podaje rozpoznawaczowi ciąg próbek co 10 ms i zwraca wszystkie zdarzenia.
-private func odtworz(
+/// Feeds the recognizer a sequence of samples every 10 ms and returns all events.
+private func replay(
     _ recognizer: inout ButtonRecognizer,
-    wcisniety: Bool,
-    przez czas: TimeInterval,
-    od start: TimeInterval
+    pressed: Bool,
+    for duration: TimeInterval,
+    from start: TimeInterval
 ) -> [ButtonEvent] {
-    var zdarzenia: [ButtonEvent] = []
+    var events: [ButtonEvent] = []
     var t = start
-    while t < start + czas {
-        if let e = recognizer.consume(ButtonSample(pressed: wcisniety, timestamp: t)) {
-            zdarzenia.append(e)
+    while t < start + duration {
+        if let e = recognizer.consume(ButtonSample(pressed: pressed, timestamp: t)) {
+            events.append(e)
         }
         t += 0.01
     }
-    return zdarzenia
+    return events
 }
 
-@Test func krotkieWcisniecieDajeNacisniecie() {
+@Test func shortPressYieldsPress() {
     var r = ButtonRecognizer()
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    _ = odtworz(&r, wcisniety: true, przez: 0.3, od: 0.2)
-    let po = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.5)
-    #expect(po == [.press])
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    _ = replay(&r, pressed: true, for: 0.3, from: 0.2)
+    let after = replay(&r, pressed: false, for: 0.2, from: 0.5)
+    #expect(after == [.press])
 }
 
-@Test func przytrzymanieDajeHoldWMomenciePrzekroczeniaProgu() {
+@Test func holdFiresAtThresholdCrossing() {
     var r = ButtonRecognizer()
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    let wtrakcie = odtworz(&r, wcisniety: true, przez: 1.5, od: 0.2)
-    #expect(wtrakcie == [.hold])
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    let during = replay(&r, pressed: true, for: 1.5, from: 0.2)
+    #expect(during == [.hold])
 }
 
-@Test func poPrzytrzymaniuPuszczenieNieDajeNacisniecia() {
+@Test func releaseAfterHoldYieldsNoPress() {
     var r = ButtonRecognizer()
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    _ = odtworz(&r, wcisniety: true, przez: 1.5, od: 0.2)
-    let po = odtworz(&r, wcisniety: false, przez: 0.5, od: 1.7)
-    #expect(po.isEmpty)
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    _ = replay(&r, pressed: true, for: 1.5, from: 0.2)
+    let after = replay(&r, pressed: false, for: 0.5, from: 1.7)
+    #expect(after.isEmpty)
 }
 
-@Test func tuzPonizejProguToNacisniecie() {
+@Test func justBelowThresholdIsPress() {
     var r = ButtonRecognizer(tuning: .init(hold: 0.4, debounce: 0.03, cooldown: 0.0))
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    let wtrakcie = odtworz(&r, wcisniety: true, przez: 0.35, od: 0.2)
-    #expect(wtrakcie.isEmpty)
-    let po = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.55)
-    #expect(po == [.press])
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    let during = replay(&r, pressed: true, for: 0.35, from: 0.2)
+    #expect(during.isEmpty)
+    let after = replay(&r, pressed: false, for: 0.2, from: 0.55)
+    #expect(after == [.press])
 }
 
-@Test func drganieStykuJestTlumione() {
+@Test func contactBounceIsSuppressed() {
     var r = ButtonRecognizer()
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    // Trzy zbocza w ciągu 20 ms — poniżej progu debounce.
-    var zdarzenia: [ButtonEvent] = []
-    for (i, stan) in [true, false, true].enumerated() {
-        if let e = r.consume(ButtonSample(pressed: stan, timestamp: 0.2 + Double(i) * 0.005)) {
-            zdarzenia.append(e)
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    // Three edges within 20 ms — below the debounce threshold.
+    var events: [ButtonEvent] = []
+    for (i, state) in [true, false, true].enumerated() {
+        if let e = r.consume(ButtonSample(pressed: state, timestamp: 0.2 + Double(i) * 0.005)) {
+            events.append(e)
         }
     }
-    #expect(zdarzenia.isEmpty)
+    #expect(events.isEmpty)
 }
 
-@Test func cooldownTlumiDrugieNacisniecie() {
+@Test func cooldownSuppressesSecondPress() {
     var r = ButtonRecognizer()
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    _ = odtworz(&r, wcisniety: true, przez: 0.2, od: 0.2)
-    let pierwsze = odtworz(&r, wcisniety: false, przez: 0.1, od: 0.4)
-    #expect(pierwsze == [.press])
-    _ = odtworz(&r, wcisniety: true, przez: 0.1, od: 0.5)
-    let drugie = odtworz(&r, wcisniety: false, przez: 0.1, od: 0.6)
-    #expect(drugie.isEmpty)
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    _ = replay(&r, pressed: true, for: 0.2, from: 0.2)
+    let first = replay(&r, pressed: false, for: 0.1, from: 0.4)
+    #expect(first == [.press])
+    _ = replay(&r, pressed: true, for: 0.1, from: 0.5)
+    let second = replay(&r, pressed: false, for: 0.1, from: 0.6)
+    #expect(second.isEmpty)
 }
 
-@Test func przytrzymanieStlumionePrzezCooldownWychodziPozniej() {
-    // Konfiguracja patologiczna: cooldown dłuższy niż debounce + próg.
-    // Bez poprawki flaga holdZgloszony zapalałaby się mimo stłumienia
-    // i Przytrzymanie przepadłoby bezpowrotnie.
+@Test func holdSuppressedByCooldownArrivesLater() {
+    // Pathological configuration: cooldown longer than debounce + threshold.
+    // Without the fix, the holdReported flag would still get set despite the
+    // suppression, and the Hold would be lost for good.
     var r = ButtonRecognizer(tuning: .init(hold: 0.4, debounce: 0.03, cooldown: 0.8))
-    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    _ = odtworz(&r, wcisniety: true, przez: 0.2, od: 0.2)
-    let pierwsze = odtworz(&r, wcisniety: false, przez: 0.1, od: 0.4)
-    #expect(pierwsze == [.press])
-    // Próg mija w 0,9 s, ale cooldown po Naciśnięciu trwa do 1,2 s.
-    let wtrakcie = odtworz(&r, wcisniety: true, przez: 1.2, od: 0.5)
-    #expect(wtrakcie == [.hold])
+    _ = replay(&r, pressed: false, for: 0.2, from: 0.0)
+    _ = replay(&r, pressed: true, for: 0.2, from: 0.2)
+    let first = replay(&r, pressed: false, for: 0.1, from: 0.4)
+    #expect(first == [.press])
+    // The threshold passes at 0.9 s, but the cooldown after the Press lasts until 1.2 s.
+    let during = replay(&r, pressed: true, for: 1.2, from: 0.5)
+    #expect(during == [.hold])
 }
 
-@Test func ciaglyStanPuszczonyNieDajeZdarzen() {
+@Test func steadyReleasedStateYieldsNoEvents() {
     var r = ButtonRecognizer()
-    let zdarzenia = odtworz(&r, wcisniety: false, przez: 5.0, od: 0.0)
-    #expect(zdarzenia.isEmpty)
+    let events = replay(&r, pressed: false, for: 5.0, from: 0.0)
+    #expect(events.isEmpty)
 }
