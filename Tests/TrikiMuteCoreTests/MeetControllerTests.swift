@@ -181,6 +181,36 @@ private final class StubBackend: MeetBackend {
     #expect(fallback.probeCalls == 1)
 }
 
+@Test func controllerProbeKeepsPrimaryFailureWhenFallbackFindsNoTarget() {
+    // The asymmetry this guards against: the primary's .failed means "I could
+    // not search every Instance". If the fallback then answers .noTarget —
+    // "I searched whichever Instance the system routed to" — that is a
+    // strictly weaker claim, and must not overwrite the primary's failure.
+    let primary = StubBackend(probe: .failed("brak zgody na Google Chrome"))
+    let fallback = StubBackend(probe: .noTarget)
+    let controller = MeetController(primary: primary, fallback: fallback)
+    let outcome = controller.probe(instances: twoInstances)
+    if case .failed(let message) = outcome {
+        #expect(message == "brak zgody na Google Chrome")
+    } else {
+        Issue.record("Oczekiwano .failed z komunikatem primary, otrzymano \(outcome)")
+    }
+    #expect(fallback.probeCalls == 1)
+}
+
+@Test func controllerPerformKeepsPrimaryFailureWhenFallbackFindsNoTarget() {
+    let primary = StubBackend(probe: .noTarget, action: .failed("brak zgody na Google Chrome"))
+    let fallback = StubBackend(probe: .noTarget, action: .noTarget)
+    let controller = MeetController(primary: primary, fallback: fallback)
+    let outcome = controller.perform(.microphone, instances: twoInstances)
+    if case .failed(let message) = outcome {
+        #expect(message == "brak zgody na Google Chrome")
+    } else {
+        Issue.record("Oczekiwano .failed z komunikatem primary, otrzymano \(outcome)")
+    }
+    #expect(fallback.performCalls == 1)
+}
+
 @Test func controllerNeverUsesFallbackWhenPrimarySaysNoTarget() {
     // The rule that makes the fallback sane: the primary has already searched
     // every Instance, so the fallback — which searches a subset of them — has

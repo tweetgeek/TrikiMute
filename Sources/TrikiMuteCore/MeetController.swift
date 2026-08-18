@@ -60,19 +60,37 @@ public struct MeetController {
     /// fallback searches a subset of the same browsers, so it cannot find
     /// anything the primary missed, and asking it would add an Apple Event per
     /// browser to every probe tick in the app's most common state.
+    ///
+    /// On the way out, the fallback's `.noTarget` is discarded in favor of the
+    /// primary's `.failed`. The two `.noTarget`s are not the same claim: from
+    /// the primary it means "I searched every Instance and found no call";
+    /// from the fallback, addressed by name, it means "I searched whichever
+    /// Instance the system happened to route the Apple Event to" — a strictly
+    /// weaker claim, and one already contradicted by the primary having been
+    /// unable to finish. Only a positive answer from the fallback — a Target
+    /// found — is trusted; anything else surfaces the primary's failure.
     public func probe(instances: [BrowserInstance]) -> ProbeOutcome {
         let outcome = primary.probe(instances: instances)
         guard case .failed = outcome, let fallback else { return outcome }
-        return fallback.probe(instances: instances)
+        let second = fallback.probe(instances: instances)
+        if case .noTarget = second { return outcome }
+        return second
     }
 
     /// Performs an Action in the first Instance that has a Target. Falls back
     /// under the same rule as `probe(instances:)`, and with the same caveat —
     /// the fallback cannot choose an Instance, so if a call is running in more
     /// than one, it may click in the wrong one (see `docs/follow-ups.md`).
+    ///
+    /// Same exit rule as `probe(instances:)`, and for the same reason: the
+    /// fallback's `.noTarget` is a weaker claim than the primary's `.failed`,
+    /// so it never overwrites it. Only `.performed` (or a fallback `.failed`,
+    /// which replaces one failure with another) is trusted from the fallback.
     public func perform(_ action: MeetAction, instances: [BrowserInstance]) -> ActionOutcome {
         let outcome = primary.perform(action, instances: instances)
         guard case .failed = outcome, let fallback else { return outcome }
-        return fallback.perform(action, instances: instances)
+        let second = fallback.perform(action, instances: instances)
+        if case .noTarget = second { return outcome }
+        return second
     }
 }
