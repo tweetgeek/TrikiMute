@@ -38,6 +38,7 @@ struct MenuBarView: View {
 
         Divider()
 
+        aboutEntry
         Button {
             state.toggleLoginItem()
         } label: {
@@ -52,6 +53,23 @@ struct MenuBarView: View {
             Label("Zakończ", systemImage: "xmark.circle.fill")
         }
         .keyboardShortcut("q")
+    }
+
+    /// Opens (or focuses) `AboutWindowView` — same activation dance as
+    /// `pairingEntry` above, required for the same reason: this is an
+    /// `LSUIElement` accessory app with no Dock icon, so without an explicit
+    /// `activate(ignoringOtherApps:)` the window can open behind whatever
+    /// app currently has focus instead of becoming key. Placed in the
+    /// bottom cluster next to autostart and quit — a static info screen,
+    /// not a call action or a device-lifecycle one, so it doesn't belong up
+    /// with those.
+    private var aboutEntry: some View {
+        Button {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            openWindow(id: AboutWindow.id)
+        } label: {
+            Label("O aplikacji", systemImage: "info.circle")
+        }
     }
 
     /// The menu's single pairing row — everything pairing used to render

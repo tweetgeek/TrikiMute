@@ -25,5 +25,16 @@ struct TrikiMuteApp: App {
             PairingWindowView(state: state)
         }
         .windowResizability(.contentSize)
+
+        // The About screen, opened on demand from the menu's bottom
+        // cluster — see `MenuBarView.aboutEntry`. Same singleton `Window`
+        // reasoning as pairing above: reopening focuses the one instance
+        // instead of stacking a second. `.contentSize` fits the window to
+        // `AboutWindowView`'s fixed-width static content — it never needs
+        // to resize or scroll.
+        Window("O aplikacji", id: AboutWindow.id) {
+            AboutWindowView()
+        }
+        .windowResizability(.contentSize)
     }
 }
