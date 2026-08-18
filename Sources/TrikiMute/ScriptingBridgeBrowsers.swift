@@ -49,6 +49,69 @@ final class ScriptingBridgeBrowsers: NSObject, BrowserAccess {
                 return .init(message: "\(browser): błąd Apple Events \(code)")
             }
         }
+
+        /// Validates the raw return value of `executeJavascript:`, extracted
+        /// out of `ScriptingBridgeTab.execute` so the mandatory "JavaScript
+        /// from Apple Events disabled" case can be tested without a real
+        /// browser process.
+        ///
+        /// A missing string is an anomaly, not an answer — the same posture
+        /// the AppleScript runner takes. Returning "NONE" here would let a
+        /// browser with JavaScript-from-Apple-Events disabled masquerade as a
+        /// browser with no call in it.
+        static func validated(_ answer: Any?, browser: String) throws -> String {
+            guard let text = answer as? String else {
+                throw Failure(
+                    message: "\(browser) nie zwrócił wyniku JavaScriptu — sprawdź "
+                        + "View → Developer → Allow JavaScript from Apple Events"
+                )
+            }
+            return text
+        }
+
+        /// The sweep decision, extracted out of `tabs(in:)` so the most
+        /// dangerous logic in this file — the one thing standing between a
+        /// swallowed Apple Event and a false `.noTarget` — can be tested
+        /// without building real ScriptingBridge objects.
+        ///
+        /// Generic over the payload: production calls this with
+        /// `Element == (tab: ScriptableTab, url: String)` so the collected
+        /// values are ready to become `ScriptingBridgeTab`s directly; tests
+        /// call it with `Element == String`, standing in for just the URL.
+        ///
+        /// `windows` is one entry per window that was asked for its tabs —
+        /// `nil` if the window itself didn't answer `tabs()`. A non-nil entry
+        /// is that window's tabs, one per tab, `nil` if that tab didn't
+        /// answer `URL`.
+        ///
+        /// A `nil` is swallowed silently as long as *something* elsewhere in
+        /// the sweep answered: one non-answering window or tab must not take
+        /// down an Instance whose other windows/tabs answered normally. But
+        /// if literally nothing answered — every entry `nil` — an empty
+        /// result would read as "no call in this browser", i.e. a failure
+        /// wearing the mask of `.noTarget`, so that case throws instead of
+        /// returning empty.
+        static func sweep<Element>(_ windows: [[Element?]?], browser: String) throws -> [Element] {
+            var result: [Element] = []
+            var unanswered = false
+            for window in windows {
+                guard let tabs = window else {
+                    unanswered = true
+                    continue
+                }
+                for element in tabs {
+                    guard let element else {
+                        unanswered = true
+                        continue
+                    }
+                    result.append(element)
+                }
+            }
+            if result.isEmpty && unanswered {
+                throw Failure(message: "\(browser) nie odpowiedział na pytanie o karty")
+            }
+            return result
+        }
     }
 
     /// Apple Events time out after this many ticks of 1/60 s — 5 seconds, the
@@ -75,40 +138,45 @@ final class ScriptingBridgeBrowsers: NSObject, BrowserAccess {
                 ?? Failure(message: "\(instance.browser.name) nie odpowiedział na pytanie o okna")
         }
 
-        var result: [any BrowserTab] = []
-        // Below the window level, a nil answer is treated more leniently than
-        // `windows()` above: a single window or tab that doesn't answer
-        // `tabs()`/`URL` (a DevTools panel, some other window ScriptingBridge
-        // can't fully describe) must not take down an Instance whose other
-        // windows answered normally, so it's skipped with `continue`, same as
-        // before this fix. But if *nothing* answers — every window and every
-        // tab comes back nil — an empty `result` would read as "no call in
-        // this browser", which is exactly the failure-masquerading-as-no-
-        // target defect this task exists to prevent. So the sweep is only
-        // trusted as genuinely empty once at least one window or tab has
-        // actually answered; otherwise it's a failure, judged after every
-        // window has had its chance.
-        var unanswered = false
+        // Below the window level, a nil answer is only lenient in the case
+        // that has an innocent explanation. There are two gates, not one:
+        //
+        // - If the nil came from an actual Apple Event *error* — the trap
+        //   caught something — `trap.failure(browser:)` below is non-nil and
+        //   the whole Instance throws unconditionally, regardless of the
+        //   `nil`s collected here. A window that failed to answer because the
+        //   event itself errored is exactly what the trap records, so it can
+        //   never survive as a quiet skip.
+        // - If the nil came from `respondsToSelector:` simply returning false
+        //   for that particular object (a DevTools panel, some other window
+        //   ScriptingBridge can't fully describe) — no error, nothing for the
+        //   trap to see — then it really is a class the app cannot ask, and
+        //   it's swallowed by `Failure.sweep` below: it must not take down an
+        //   Instance whose other windows answered normally.
+        //
+        // `Failure.sweep` is the backstop for the case where neither of those
+        // fired conclusively (see its doc comment for the empty-sweep rule).
+        var perWindow: [[(tab: ScriptableTab, url: String)?]?] = []
         for window in windows {
             let scriptableWindow = unsafeBitCast(window as AnyObject, to: ScriptableWindow.self)
             guard let tabs = scriptableWindow.tabs?() else {
-                unanswered = true
+                perWindow.append(nil)
                 continue
             }
+            var windowTabs: [(tab: ScriptableTab, url: String)?] = []
             for tab in tabs {
                 let scriptableTab = unsafeBitCast(tab as AnyObject, to: ScriptableTab.self)
-                guard let url = scriptableTab.URL else {
-                    unanswered = true
-                    continue
+                if let url = scriptableTab.URL {
+                    windowTabs.append((scriptableTab, url))
+                } else {
+                    windowTabs.append(nil)
                 }
-                result.append(ScriptingBridgeTab(tab: scriptableTab, url: url, trap: trap, browser: instance.browser.name))
             }
+            perWindow.append(windowTabs)
         }
         if let failure = trap.failure(browser: instance.browser.name) { throw failure }
-        if result.isEmpty && unanswered {
-            throw Failure(message: "\(instance.browser.name) nie odpowiedział na pytanie o karty")
-        }
-        return result
+        let collected = try Failure.sweep(perWindow, browser: instance.browser.name)
+        return collected.map { ScriptingBridgeTab(tab: $0.tab, url: $0.url, trap: trap, browser: instance.browser.name) }
     }
 }
 
@@ -123,17 +191,7 @@ private struct ScriptingBridgeTab: BrowserTab {
         trap.reset()
         let answer = tab.executeJavascript?(javascript)
         if let failure = trap.failure(browser: browser) { throw failure }
-        guard let text = answer as? String else {
-            // The same posture the AppleScript runner takes: a missing string
-            // is an anomaly, not an answer. Returning "NONE" here would let a
-            // browser with JavaScript-from-Apple-Events disabled masquerade as
-            // a browser with no call in it.
-            throw ScriptingBridgeBrowsers.Failure(
-                message: "\(browser) nie zwrócił wyniku JavaScriptu — sprawdź "
-                    + "View → Developer → Allow JavaScript from Apple Events"
-            )
-        }
-        return text
+        return try ScriptingBridgeBrowsers.Failure.validated(answer, browser: browser)
     }
 }
 
