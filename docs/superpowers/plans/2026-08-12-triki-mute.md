@@ -654,6 +654,20 @@ private func odtworz(
     #expect(drugie.isEmpty)
 }
 
+@Test func przytrzymanieStlumionePrzezCooldownWychodziPozniej() {
+    // Konfiguracja patologiczna: cooldown dłuższy niż debounce + próg.
+    // Bez poprawki flaga holdZgloszony zapalałaby się mimo stłumienia
+    // i Przytrzymanie przepadłoby bezpowrotnie.
+    var r = ButtonRecognizer(tuning: .init(hold: 0.4, debounce: 0.03, cooldown: 0.8))
+    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
+    _ = odtworz(&r, wcisniety: true, przez: 0.2, od: 0.2)
+    let pierwsze = odtworz(&r, wcisniety: false, przez: 0.1, od: 0.4)
+    #expect(pierwsze == [.press])
+    // Próg mija w 0,9 s, ale cooldown po Naciśnięciu trwa do 1,2 s.
+    let wtrakcie = odtworz(&r, wcisniety: true, przez: 1.2, od: 0.5)
+    #expect(wtrakcie == [.hold])
+}
+
 @Test func ciaglyStanPuszczonyNieDajeZdarzen() {
     var r = ButtonRecognizer()
     let zdarzenia = odtworz(&r, wcisniety: false, przez: 5.0, od: 0.0)
@@ -728,8 +742,12 @@ public struct ButtonRecognizer {
 
         guard wcisniety, !holdZgloszony else { return nil }
         guard sample.timestamp - poczatekWcisniecia >= tuning.hold else { return nil }
+        // Flagę zapalamy dopiero po faktycznej emisji. Gdyby zapalała się
+        // wcześniej, Przytrzymanie stłumione przez cooldown przepadałoby
+        // bezpowrotnie zamiast wyjść z opóźnieniem.
+        guard let zdarzenie = wyemituj(.hold, at: sample.timestamp) else { return nil }
         holdZgloszony = true
-        return wyemituj(.hold, at: sample.timestamp)
+        return zdarzenie
     }
 
     private mutating func wyemituj(_ event: ButtonEvent, at timestamp: TimeInterval) -> ButtonEvent? {
@@ -743,7 +761,7 @@ public struct ButtonRecognizer {
 - [ ] **Step 4: Uruchom testy i potwierdź, że przechodzą**
 
 Run: `swift test --filter ButtonRecognizerTests`
-Expected: PASS, 7 testów.
+Expected: PASS, 8 testów.
 
 - [ ] **Step 5: Commit**
 
@@ -1043,7 +1061,7 @@ Expected: PASS, 10 testów.
 - [ ] **Step 6: Uruchom cały zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 24 testy (7 + 7 + 10).
+Expected: PASS, 25 testów (7 + 8 + 10).
 
 - [ ] **Step 7: Commit**
 
@@ -1915,7 +1933,7 @@ naciśnięciu przycisku bez żadnej ingerencji.
 - [ ] **Step 5: Uruchom pełny zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 24 testy.
+Expected: PASS, 25 testów.
 
 - [ ] **Step 6: Commit**
 
