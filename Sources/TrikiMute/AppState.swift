@@ -17,8 +17,9 @@ final class AppState {
     private(set) var ostatniaAkcja: String = "—"
     private(set) var bladAutostartu: String?
 
-    private let polaczenie = TrikiConnection()
-    private let controller = MeetController(runner: AppleScriptRunner())
+    private let polaczenie: any KapselConnection
+    private let controller: MeetController
+    private let kolejka: any SkryptowaKolejka
     private var sonda: Timer?
     private var sondaWToku = false
     /// Akcja w locie. Naciśnięcia, które przychodzą, zanim poprzednia Akcja
@@ -35,18 +36,37 @@ final class AppState {
     /// nie wpisze z powrotem danych urządzenia, którego już nie ma.
     private var pokolenieSondy = 0
 
+    /// Odstęp sondy. Sonda chodzi wyłącznie przy uzbrojonym Kapslu — poza
+    /// rozmową nie ma czego odpytywać.
+    private static let odstepSondy: TimeInterval = 3.0
+
     /// Skrypty wykonują się poza głównym wątkiem. `NSAppleScript` blokuje na
     /// czas rozmowy z przeglądarką, a przy pierwszym użyciu także na czas
     /// odpowiedzi użytkownika na pytanie o zgodę — na głównym wątku zamroziłoby
     /// to pasek menu. Kolejka jest szeregowa, więc sonda i Akcje nie wchodzą
     /// sobie w drogę. Stan zmieniamy wyłącznie po powrocie na główny wątek.
-    private let kolejkaSkryptow = DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
-
-    /// Odstęp sondy. Sonda chodzi wyłącznie przy uzbrojonym Kapslu — poza
-    /// rozmową nie ma czego odpytywać.
-    private static let odstepSondy: TimeInterval = 3.0
-
-    init() {
+    ///
+    /// `polaczenie`, `controller` i `kolejka` są parametrami inicjalizatora —
+    /// wyłącznie po to, żeby testy mogły podstawić atrapy zamiast prawdziwego
+    /// CoreBluetooth, AppleScriptu i wątków w tle. Wartości domyślne
+    /// odtwarzają dotychczasowe, produkcyjne połączenia, więc `AppState()` w
+    /// `TrikiMuteApp.swift` nie musi się zmienić.
+    ///
+    /// `polaczenie` domyślnie `nil` zamiast `TrikiConnection()` wprost: wyrażenia
+    /// domyślne parametrów nie dziedziczą izolacji `@MainActor` inicjalizatora,
+    /// więc budowa `TrikiConnection` (klasy `@MainActor`) musi się odbyć w ciele
+    /// `init`, a nie w jego liście parametrów.
+    init(
+        polaczenie: (any KapselConnection)? = nil,
+        controller: MeetController = MeetController(runner: AppleScriptRunner()),
+        kolejka: any SkryptowaKolejka = DomyslnaKolejkaSkryptow(
+            kolejkaTla: DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
+        )
+    ) {
+        let polaczenie = polaczenie ?? TrikiConnection()
+        self.polaczenie = polaczenie
+        self.controller = controller
+        self.kolejka = kolejka
         polaczenie.onState = { [weak self] stan in
             guard let self else { return }
             stanKapsla = stan
@@ -109,20 +129,20 @@ final class AppState {
         // NSWorkspace pytamy jeszcze na głównym wątku.
         let przegladarki = BrowserOrder.uporzadkowane()
         let controller = self.controller
-        kolejkaSkryptow.async {
-            let wynik = controller.perform(action, browsers: przegladarki)
-            DispatchQueue.main.async { [weak self] in
+        kolejka.uruchom(
+            tlo: { controller.perform(action, browsers: przegladarki) },
+            glowny: { [weak self] wynik in
                 guard let self else { return }
                 akcjaWToku = false
                 Feedback.zagraj(wynik)
                 ostatniaAkcja = opis(action, wynik)
                 // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt
                 // musi poczekać, inaczej zobaczymy stan sprzed Akcji.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                kolejka.poCzasie(0.3) { [weak self] in
                     self?.odswiezCel()
                 }
             }
-        }
+        )
     }
 
     func zapomnijKapsel() {
@@ -172,7 +192,11 @@ final class AppState {
     /// zostawiałoby na ekranie stan sprzed Akcji aż do następnego cyklu.
     /// Stąd zaległość: w kolejce czeka najwyżej jedna sonda i rusza od razu
     /// po bieżącej.
-    private func odswiezCel() {
+    ///
+    /// Widoczność pakietowa (nie `private`) celowo — testy `AppState`
+    /// wywołują tę metodę wprost, żeby przypiąć wyścigi bez czekania na
+    /// timer albo prawdziwe rozłączenie BLE.
+    func odswiezCel() {
         // Sonda ma sens wyłącznie przy uzbrojonym Kapslu. Bez tej bramki
         // odświeżenie opóźnione po Akcji mogłoby wystartować już po
         // rozłączeniu i wpisać Cel dla urządzenia, którego nie ma.
@@ -188,9 +212,9 @@ final class AppState {
         let przegladarki = BrowserOrder.uporzadkowane()
         let controller = self.controller
         polaczenie.odczytajRSSI()
-        kolejkaSkryptow.async {
-            let wynik = controller.probe(browsers: przegladarki)
-            DispatchQueue.main.async { [weak self] in
+        kolejka.uruchom(
+            tlo: { controller.probe(browsers: przegladarki) },
+            glowny: { [weak self] wynik in
                 guard let self else { return }
                 sondaWToku = false
                 // Wynik przedawniony: w międzyczasie sonda została zatrzymana
@@ -211,6 +235,6 @@ final class AppState {
                 }
                 if sondaZalegla { odswiezCel() }
             }
-        }
+        )
     }
 }

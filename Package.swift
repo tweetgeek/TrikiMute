@@ -20,5 +20,10 @@ let package = Package(
             dependencies: ["TrikiMuteCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "TrikiMuteTests",
+            dependencies: ["TrikiMute", "TrikiMuteCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )
