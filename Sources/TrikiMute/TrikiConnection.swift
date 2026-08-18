@@ -239,7 +239,13 @@ extension TrikiConnection: CBPeripheralDelegate {
         guard let dane = characteristic.value else { return }
         let uuid = characteristic.uuid
         let bajty = [UInt8](dane)
-        let teraz = Date().timeIntervalSince1970
+        // Zegar ścienny (Date()) nie jest monotoniczny — cofnięcie czasu
+        // (wybudzenie po długim śnie, korekta NTP, ręczna zmiana) dałoby
+        // ujemne różnice i ButtonRecognizer odrzucałby każde zbocze jako
+        // drganie styku, aż zegar by „dogonił" poprzednie znaczniki czasu.
+        // systemUptime rośnie zawsze, więc odstępy między próbkami są
+        // wiarygodne niezależnie od zmian zegara systemowego.
+        let teraz = ProcessInfo.processInfo.systemUptime
 
         Task { @MainActor in
             switch uuid {
