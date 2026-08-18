@@ -44,7 +44,11 @@ final class TrikiConnection: NSObject {
     /// can't be read separately.
     private static let startCommand = Data([0x20, 0x10, 0x00, 0xD0, 0x07, 0x68, 0x00, 0x03])
     private static let knownDeviceKey = "znanyKapselUUID"
-    private static let nameFragment = "triki"
+    // Filtered from the nonisolated `didDiscover` callback, before hopping
+    // to the main actor — a plain immutable String constant is safe to read
+    // from any isolation domain, but the compiler can't infer that for a
+    // static member of a @MainActor type without this annotation.
+    private nonisolated static let nameFragment = "triki"
 
     var onEvent: ((ButtonEvent) -> Void)?
     var onState: ((DeviceState) -> Void)?
@@ -62,14 +66,14 @@ final class TrikiConnection: NSObject {
     /// either `confirmPairing()` or `cancelPairing()` ends it.
     private var pairing: PairingSession?
 
-    /// State scoped to one pairing attempt. `previousPeripheral` is
-    /// whatever `peripheral` held when `startPairing()` was called — the
-    /// saved device's connection, if there was one — so `cancelPairing()`
-    /// knows exactly what to restore. `candidates` is keyed by identifier
-    /// so a repeat advertisement updates signal strength instead of
-    /// duplicating. `chosen` is set once `choose(_:)` picks one of them.
+    /// State scoped to one pairing attempt. `candidates` is keyed by
+    /// identifier so a repeat advertisement updates signal strength instead
+    /// of duplicating. `chosen` is set once `choose(_:)` picks one of them.
+    /// Restoring what was there before pairing (the saved device's pending
+    /// connection, if any) doesn't need a captured reference — `UserDefaults`
+    /// is never written during pairing, so `resumeSearch()` re-reading it
+    /// after the fact is sufficient and avoids a second source of truth.
     private struct PairingSession {
-        let previousPeripheral: CBPeripheral?
         var candidates: [UUID: (info: DeviceCandidate, peripheral: CBPeripheral)] = [:]
         var chosen: CBPeripheral?
     }
@@ -87,8 +91,18 @@ final class TrikiConnection: NSObject {
     /// Forgets the device and goes back to waiting. Use when you need to
     /// pair a different one — the app won't reconnect until `startPairing()`
     /// is called again.
+    ///
+    /// Also ends any pairing session in progress: `central` — and therefore
+    /// the scan invariant (never left running with nothing able to stop it)
+    /// — belongs solely to this type, so it has to hold regardless of what
+    /// a caller does, not merely because the menu is expected to prevent
+    /// calling this mid-pairing.
     func forget() {
         UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
+        if pairing != nil {
+            central.stopScan()
+            pairing = nil
+        }
         if let peripheral { central.cancelPeripheralConnection(peripheral) }
         peripheral = nil
         onState?(.disconnected)
@@ -101,7 +115,7 @@ final class TrikiConnection: NSObject {
     /// keeps running undisturbed while the user browses candidates.
     func startPairing() {
         guard central?.state == .poweredOn else { return }
-        pairing = PairingSession(previousPeripheral: peripheral)
+        pairing = PairingSession()
         central.scanForPeripherals(withServices: nil, options: nil)
     }
 
@@ -151,8 +165,16 @@ final class TrikiConnection: NSObject {
     /// writes `knownDeviceKey`: `didDiscover` no longer does, and
     /// `choose(_:)` only connects, so an unconfirmed candidate can never
     /// become "the" device.
+    ///
+    /// Stops the scan defensively, same as `cancelPairing()`: the expected
+    /// caller only confirms after `choose(_:)` already stopped it, but
+    /// nothing here should depend on being called in the right order —
+    /// called out of sequence, this must still leave the scan invariant
+    /// intact rather than end the session with scanning still running and
+    /// no way left to stop it.
     func confirmPairing() {
         guard let peripheral else { return }
+        central.stopScan()
         UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.knownDeviceKey)
         pairing = nil
     }
@@ -199,9 +221,9 @@ extension TrikiConnection: CBCentralManagerDelegate {
         rssi RSSI: NSNumber
     ) {
         let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
+        guard name.lowercased().contains(Self.nameFragment) else { return }
         let rssi = RSSI.intValue
         Task { @MainActor in
-            guard name.lowercased().contains(Self.nameFragment) else { return }
             // Outside pairing, discovery does nothing — no saved device
             // means the app waits for the user to start pairing, and it
             // never connects or writes UserDefaults on its own.
