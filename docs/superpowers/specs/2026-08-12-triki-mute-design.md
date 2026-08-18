@@ -416,24 +416,57 @@ Rozwijane menu:
 - poziom baterii (procent) i RSSI
 - wykryty Cel (przeglądarka i stan) albo jego brak
 - ostatnia Akcja
-- parowanie: pozycja startowa poza sesją; w trakcie — lista kandydatów
-  z siłą sygnału, albo „łączę się" z wybranym, albo polecenie naciśnięć
-  z licznikiem pozostałych (z zaznaczeniem, gdy licznik właśnie wystartował
-  od nowa po rozłączeniu), albo komunikat o niepowodzeniu (osobny dla
-  łączenia, dla naciśnięć i dla całej próby); zawsze z opcją przerwania
+- parowanie: jedna pozycja, która otwiera osobne okno parowania (niżej) —
+  etykieta i ikona zmieniają się z fazą: „Paruj Kapsla"/„Zmień Kapsla" poza
+  sesją (zależnie od tego, czy jakiś Kapsel jest już zapisany), „Parowanie
+  w toku…" przez cały czas trwania sesji (szukanie, łączenie i potwierdzanie
+  współdzielą tę etykietę — okno, nie ta pozycja, rozróżnia je), „Parowanie
+  nieudane" po niepowodzeniu
 - „Uśpij Kapsel" — rozłącza uzbrojony Kapsel na żądanie zamiast czekać na
   rozłączenie z bezczynności; widoczne wyłącznie, gdy Kapsel jest uzbrojony
+  i żadna sesja parowania nie trwa
 - „Anuluj usypianie" — kończy oczekiwanie na zaśnięcie natychmiast i wznawia
   zawieszone `connect()`, zamiast czekać na zniknięcie albo na `sleepWaitCap`;
   widoczne w tym samym miejscu co „Uśpij Kapsel", wyłącznie w trakcie
-  `.fallingAsleep` — te dwie pozycje nigdy nie są widoczne jednocześnie
+  `.fallingAsleep` poza sesją parowania — te dwie pozycje nigdy nie są
+  widoczne jednocześnie
 - „Zapomnij Kapsel" — czyści zapamiętany identyfikator; widoczne wyłącznie,
-  gdy jakiś jest zapisany
+  gdy jakiś jest zapisany i żadna sesja parowania nie trwa
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
 - akcja testowa (przełącz mikrofon bez Kapsla)
 - wyjście
 
-Bez osobnego okna preferencji — całość mieści się w menu.
+**Okno parowania.** Menu samo w sobie znika po każdym kliknięciu — dobre dla
+jednorazowych akcji, złe dla wieloetapowego przebiegu, którego jedyna
+faktyczna informacja zwrotna, licznik pozostałych naciśnięć, aktualizuje się
+w locie i nikt jej nie widzi, jeśli trzeba za każdym razem menu otwierać
+ponownie. Dlatego parowanie od wybrania Kapsla po potwierdzenie mieszka
+w osobnym, małym oknie: lista kandydatów z siłą sygnału, stan „łączę się"
+z wybranym, polecenie naciśnięć z licznikiem pozostałych (z zaznaczeniem, gdy
+licznik właśnie wystartował od nowa po rozłączeniu), komunikat o niepowodzeniu
+z przyciskiem powrotu do listy — zawsze z opcją przerwania. Okno jest czystą
+prezentacją nad `AppState.pairing`; logika parowania (liczniki, wymagana
+liczba naciśnięć) nie zmieniła miejsca.
+
+Okno otwiera się z menu i, jeśli jest już otwarte, tylko wraca na wierzch
+zamiast się zdublować. Aplikacja jest `LSUIElement` (bez ikony w Docku), więc
+samo otwarcie okna nie czyni jej automatycznie aktywną — menu jawnie
+aktywuje aplikację przy każdym kliknięciu pozycji parowania, żeby okno
+faktycznie dostało fokus, a nie tylko pojawiło się gdzieś w tle. Zamknięcie
+okna ręcznie (czerwonym przyciskiem) nie przerywa trwającej sesji — dokładnie
+tak samo, jak wcześniej nie przerywało jej zamknięcie menu — sesja działa
+dalej, a ponowne otwarcie pokazuje jej bieżący stan. Okno zamyka się samo,
+gdy sesja kończy się bez udziału użytkownika w tej chwili: po potwierdzeniu
+kompletu naciśnięć albo po przerwaniu — obie ścieżki lądują na `.inactive`.
+Niepowodzenie (`.failed`) okna nie zamyka: to jedyne miejsce, w którym
+komunikat o błędzie jest widoczny, więc zamknięcie okna razem z nim
+odtworzyłoby dokładnie ten problem, który to okno ma rozwiązywać — użytkownik
+zamyka je sam, przyciskiem „Anuluj parowanie", albo wraca do listy i próbuje
+ponownie.
+
+Reszta menu (przełączanie mikrofonu/kamery, usypianie, zapominanie, autostart,
+wyjście) zostaje bez zmian — to zwykłe jednoklikowe akcje, którym menu jako
+kontener wystarcza.
 
 ## Obsługa błędów
 

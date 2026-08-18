@@ -11,5 +11,19 @@ struct TrikiMuteApp: App {
             Image(systemName: state.iconName)
         }
         .menuBarExtraStyle(.menu)
+
+        // The pairing flow's own window (`PairingWindowView`), opened on
+        // demand from the menu's pairing row — never shown at launch. A
+        // `Window` scene (not `WindowGroup`) is a singleton: `openWindow(id:)`
+        // on an already-open instance brings it forward instead of creating
+        // a second one, which is exactly the "reopen focuses, doesn't stack"
+        // behavior pairing needs. `.contentSize` lets the window hug the
+        // VStack's natural size instead of starting at some arbitrary
+        // resizable default — this is a small, single-purpose utility
+        // window, not a document window.
+        Window("Parowanie Kapsla", id: PairingWindow.id) {
+            PairingWindowView(state: state)
+        }
+        .windowResizability(.contentSize)
     }
 }

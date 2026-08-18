@@ -507,6 +507,43 @@ final class AppState {
             + "kamera \(target.cameraOff ? "wyłączona" : "włączona")"
     }
 
+    /// Title for the menu's single pairing entry — the one row that opens
+    /// the pairing window (`PairingWindowView`). Computed here, not in
+    /// `MenuBarView`, for the same reason `deviceIcon`/`targetIcon` are:
+    /// it keeps the phase → label mapping unit-testable without rendering
+    /// SwiftUI. Mirrors the wording the old inline menu used for each phase,
+    /// so nothing changes for the user beyond where it lives.
+    ///
+    /// `.searching`, `.connecting`, and `.confirming` share one label — the
+    /// window itself is where those three phases are told apart (see
+    /// `PairingWindowView`); the menu row's job is only to say "a session is
+    /// live, click to see it".
+    var pairingMenuTitle: String {
+        switch pairing {
+        case .inactive:
+            return hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla"
+        case .searching, .connecting, .confirming:
+            return "Parowanie w toku…"
+        case .failed:
+            return "Parowanie nieudane"
+        }
+    }
+
+    /// Icon for the menu's pairing entry, alongside `pairingMenuTitle`. The
+    /// `.failed` case gets the same triangle `pairingSection` used to show
+    /// for it inline — a failed attempt is a fault to acknowledge, same as
+    /// everywhere else that symbol appears.
+    var pairingMenuIcon: String {
+        switch pairing {
+        case .inactive:
+            return "plus.circle"
+        case .searching, .connecting, .confirming:
+            return "dot.radiowaves.left.and.right"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
     var loginItemDescription: String {
         switch LoginItem.status {
         case .enabled: return "✓ Uruchamiaj przy logowaniu"

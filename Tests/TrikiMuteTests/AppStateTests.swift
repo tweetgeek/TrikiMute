@@ -1130,6 +1130,115 @@ private func chooseAndArmCandidate(
     #expect(resetAfterDrop == false)
 }
 
+// MARK: - Pairing window menu entry (pairingMenuTitle / pairingMenuIcon)
+//
+// The pairing flow moved out of the menu into its own window
+// (`PairingWindowView`); the menu keeps exactly one row that opens it.
+// `pairingMenuTitle`/`pairingMenuIcon` are the pure phase → label/icon
+// mapping behind that row, kept on `AppState` (like `deviceIcon`/
+// `targetIcon` before them) specifically so the mapping is unit-testable
+// without rendering SwiftUI. Six tests below cover every `PairingPhase`
+// case exhaustively, the same posture the existing `iconName` "seven
+// states" tests take.
+
+@Test @MainActor func pairingMenuEntryShowsParujWhenInactiveWithNoSavedDevice() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    #expect(state.pairing == .inactive)
+    #expect(!state.hasSavedDevice)
+    #expect(state.pairingMenuTitle == "Paruj Kapsla")
+    #expect(state.pairingMenuIcon == "plus.circle")
+}
+
+@Test @MainActor func pairingMenuEntryShowsZmienWhenInactiveWithSavedDevice() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    #expect(state.pairing == .inactive)
+    #expect(state.hasSavedDevice)
+    // Same icon as the unsaved case — only the wording distinguishes first
+    // pairing from changing device, same as the button used to before the
+    // move (see the old `pairingSection`'s `.inactive` case).
+    #expect(state.pairingMenuTitle == "Zmień Kapsla")
+    #expect(state.pairingMenuIcon == "plus.circle")
+}
+
+@Test @MainActor func pairingMenuEntryShowsInProgressWhileSearching() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    state.startPairing()
+    guard case .searching = state.pairing else {
+        Issue.record("expected .searching once startPairing() succeeds")
+        return
+    }
+    #expect(state.pairingMenuTitle == "Parowanie w toku…")
+    #expect(state.pairingMenuIcon == "dot.radiowaves.left.and.right")
+}
+
+@Test @MainActor func pairingMenuEntryShowsInProgressWhileConnecting() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting right after choosing, before arming")
+        return
+    }
+    // Same title/icon as .searching — the window, not this row, is where
+    // .searching/.connecting/.confirming are told apart.
+    #expect(state.pairingMenuTitle == "Parowanie w toku…")
+    #expect(state.pairingMenuIcon == "dot.radiowaves.left.and.right")
+}
+
+@Test @MainActor func pairingMenuEntryShowsInProgressWhileConfirming() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+    #expect(state.pairingMenuTitle == "Parowanie w toku…")
+    #expect(state.pairingMenuIcon == "dot.radiowaves.left.and.right")
+}
+
+@Test @MainActor func pairingMenuEntryShowsFailureWhenPairingFailed() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    state.startPairing()
+    clock.now += AppState.searchTimeout + 1
+    state.checkSearchDeadline()
+    guard case .failed = state.pairing else {
+        Issue.record("expected .failed once the search deadline passed")
+        return
+    }
+    #expect(state.pairingMenuTitle == "Parowanie nieudane")
+    // Same triangle the tray and the failed-phase window content use for
+    // "something is broken".
+    #expect(state.pairingMenuIcon == "exclamationmark.triangle.fill")
+}
+
 // MARK: - forgetDevice()
 
 /// The plain case: nothing else in progress, just a saved device being
