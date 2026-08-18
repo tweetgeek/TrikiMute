@@ -197,27 +197,33 @@ człowiekowi. Model dziś:
    pełną listę kandydatów (nazwa, RSSI) do `AppState`, zamiast łączyć się
    z pierwszym napotkanym. Dotychczasowe zapisane urządzenie, jeśli istnieje,
    działa nietknięte przez cały czas przeglądania listy.
-3. Wybranie kandydata z listy łączy się z nim i uzbraja go normalną ścieżką,
-   ale **nie zapisuje** jeszcze identyfikatora. Zamiast tego aplikacja losuje
-   liczbę naciśnięć z zakresu 2–5 i pokazuje polecenie z tą konkretną liczbą.
-   Naciśnięcia w tej fazie potwierdzają wybór i **nie trafiają do Meet** —
-   inaczej sama próba sparowania właściwego Kapsla wyciszałaby przypadkowo
-   mikrofon na dotychczasowym urządzeniu.
-4. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
+3. Wybranie kandydata z listy łączy się z nim. Zanim faktycznie się uzbroi,
+   aplikacja pokazuje osobną fazę „łączę się" — z jednym ograniczeniem czasu
+   (dziś: 10 s) na dotarcie do Gotowości. `connect()` w CoreBluetooth nie ma
+   własnego limitu, a kandydat, który przestał się reklamować między
+   wyświetleniem listy a kliknięciem, i tak może już nie istnieć — bez tej
+   granicy parowanie zawiesiłoby się na „łączę się" bez wyjścia poza jego
+   przerwaniem. Wymagana liczba naciśnięć (2–5) jest losowana raz, w chwili
+   wyboru — nie zmienia się już do końca próby parowania tego kandydata.
+4. Po osiągnięciu Gotowości aplikacja pokazuje polecenie z konkretną liczbą
+   naciśnięć i przechodzi do osobnej fazy potwierdzania, z **własnym**
+   ograniczeniem czasu (dziś: 15 s) liczonym od chwili uzbrojenia, nie od
+   wyboru kandydata — więc czas spędzony na łączeniu nigdy nie ujmuje czasu
+   na naciśnięcia. Naciśnięcia w tej fazie potwierdzają wybór i **nie
+   trafiają do Meet** — inaczej sama próba sparowania właściwego Kapsla
+   wyciszałaby przypadkowo mikrofon na dotychczasowym urządzeniu. Rozłączenie
+   w trakcie potwierdzania cofa fazę do „łączę się" (z tym samym, raz
+   wylosowanym wymogiem) zamiast zostawiać na ekranie nieaktualny licznik
+   naciśnięć przeciw urządzeniu, którego już nie ma.
+5. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
    Kapsel na stałe; od tej pory łączenie wraca do modelu Uzbrojenia opisanego
    wyżej.
-5. Cały krok wyboru i potwierdzenia jest ograniczony jednym wspólnym czasem
-   (dziś: 20 s), liczonym od wybrania kandydata. To ograniczenie zamyka dwa
-   różne tryby awarii jednym mechanizmem: użytkownika, który naciska za
-   wolno lub za mało razy, **oraz** kandydata, który przestał się reklamować
-   między wyświetleniem listy a kliknięciem — `connect()` w CoreBluetooth nie
-   ma własnego limitu czasu i bez tej granicy zawiesiłby parowanie na
-   „szukam" bez wyjścia poza jego przerwaniem. Ponieważ w obu przypadkach
-   żadne naciśnięcie nie nadejdzie przed upływem czasu, jeden odliczany
-   termin — bez osobnej fazy „łączę się" i bez usuwania nieaktualnych
-   kandydatów z listy — wystarcza, by żaden z nich nie zawiesił aplikacji.
-   Po upływie czasu faza wraca do listy kandydatów z czytelnym komunikatem.
-6. Parowanie da się przerwać na każdym etapie; przerwanie zawsze zostawia
+6. Dwa osobne ograniczenia czasu (nie jedno wspólne) dają dwa osobne,
+   trafne komunikaty o niepowodzeniu: „Kapsel nie odpowiedział" dla fazy
+   łączenia i „nie potwierdzono wyboru" dla fazy naciśnięć — użytkownik nigdy
+   nie czyta komunikatu, który nie pasuje do tego, co faktycznie się stało.
+   Po upływie któregokolwiek faza wraca do listy kandydatów.
+7. Parowanie da się przerwać na każdym etapie; przerwanie zawsze zostawia
    dotychczasowe urządzenie dokładnie w takim stanie, w jakim było przed
    `startPairing()`.
 
@@ -254,8 +260,9 @@ Rozwijane menu:
 - wykryty Cel (przeglądarka i stan) albo jego brak
 - ostatnia Akcja
 - parowanie: pozycja startowa poza sesją; w trakcie — lista kandydatów
-  z siłą sygnału, albo polecenie naciśnięć z licznikiem pozostałych, albo
-  komunikat o niepowodzeniu; zawsze z opcją przerwania
+  z siłą sygnału, albo „łączę się" z wybranym, albo polecenie naciśnięć
+  z licznikiem pozostałych, albo komunikat o niepowodzeniu (osobny dla
+  łączenia i dla naciśnięć); zawsze z opcją przerwania
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
 - akcja testowa (przełącz mikrofon bez Kapsla)
 - wyjście
@@ -298,12 +305,17 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
 - wybór Celu: reguła pierwszeństwa przy wielu kandydatach
 - `PairingConfirmation`: zliczanie naciśnięć, tłumienie Przytrzymania, upływ
   czasu, stan końcowy po potwierdzeniu i po upływie czasu
-- `AppState` w trakcie parowania (przez wstrzykiwane atrapy, bez sprzętu):
-  naciśnięcie w fazie potwierdzania nie trafia do Meet, komplet naciśnięć
-  zapisuje identyfikator i kończy parowanie, upływ czasu kończy się porażką
-  bez zapisu, przerwanie zostawia dotychczasowe urządzenie nietknięte,
-  naciśnięcie poza parowaniem działa jak dotąd, a kandydat, który nie
-  odpowiada w wyznaczonym czasie, kończy się porażką zamiast zawieszeniem
+- `AppState` w trakcie parowania (przez wstrzykiwane atrapy i wstrzykiwany
+  zegar, bez sprzętu): naciśnięcie w fazie potwierdzania nie trafia do Meet,
+  komplet naciśnięć zapisuje identyfikator i kończy parowanie, upływ czasu
+  naciśnięć kończy się porażką z komunikatem właściwym tej fazie i bez
+  zapisu, przerwanie zostawia dotychczasowe urządzenie nietknięte,
+  naciśnięcie poza parowaniem działa jak dotąd, kandydat, który nigdy się nie
+  uzbraja, kończy się porażką z komunikatem właściwym łączeniu (odrębnym od
+  powyższego) zamiast zawieszeniem, kandydat uzbrojony tuż przed upływem
+  czasu łączenia dostaje mimo to pełne okno na naciśnięcia, a rozłączenie
+  w trakcie potwierdzania wraca do fazy łączenia z tym samym, raz
+  wylosowanym wymogiem zamiast zostawiać nieaktualny licznik na ekranie
 
 Test ręczny: warstwa CoreBluetooth na Kapslu, Akcje w prawdziwym Meet oraz
 pełny przebieg parowania (jeden i, jeśli dostępne, dwa Kapsle naraz).

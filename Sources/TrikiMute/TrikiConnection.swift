@@ -113,8 +113,19 @@ final class TrikiConnection: NSObject {
     /// scanning. Leaves the saved identifier and the current `peripheral`
     /// (if any) untouched — a saved device already connecting or connected
     /// keeps running undisturbed while the user browses candidates.
+    ///
+    /// `pairing != nil` guards against a reentrant call: `AppState` already
+    /// refuses to call this while its own `pairing` phase is live, but this
+    /// type owns `central` and `pairing`'s bookkeeping (`candidates`,
+    /// `chosen`), so it — not a well-behaved caller — is what has to hold
+    /// the invariant that a session in progress is never silently replaced.
+    /// A reentrant call here would reset `pairing` to an empty session and
+    /// drop `chosen`, which `cancelPairing()` reads to decide whether to
+    /// disconnect a connected candidate and restore the saved device; with
+    /// `chosen` gone, it would take the wrong branch. Same reasoning Task
+    /// 2's review applied to `confirmPairing()` and `forget()`.
     func startPairing() {
-        guard central?.state == .poweredOn else { return }
+        guard central?.state == .poweredOn, pairing == nil else { return }
         pairing = PairingSession()
         central.scanForPeripherals(withServices: nil, options: nil)
     }

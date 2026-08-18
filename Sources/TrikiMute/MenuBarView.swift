@@ -61,6 +61,14 @@ struct MenuBarView: View {
             }
             Button("Anuluj parowanie") { state.cancelPairing() }
 
+        case .connecting(let candidate):
+            // Distinct from the press countdown below — Finding 1 (fix
+            // round 1) flagged that showing the same text for "still
+            // connecting" and "counting presses" left the user unable to
+            // tell which one had actually failed.
+            Text("Łączę się z „\(candidate.name)”…")
+            Button("Anuluj parowanie") { state.cancelPairing() }
+
         case .confirming(let candidate, let remaining):
             Text("Potwierdź „\(candidate.name)”: naciśnij przycisk jeszcze \(remaining)×")
             Button("Anuluj parowanie") { state.cancelPairing() }

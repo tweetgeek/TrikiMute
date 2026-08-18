@@ -5,14 +5,28 @@ import TrikiMuteCore
 /// The state of an in-progress device pairing, driven by `AppState` and
 /// switched on directly by the menu.
 ///
-/// `searching` and `confirming` both count as "a session is live" — see
-/// `startPairing()`'s guard. `failed` is not live: it's a terminal state the
-/// user must acknowledge (retry via `startPairing()` again, or `cancelPairing()`)
-/// rather than something that clears itself, so the message in it is
-/// guaranteed to still be there when the user next opens the menu.
+/// `searching`, `connecting`, and `confirming` all count as "a session is
+/// live" — see `startPairing()`'s guard. `failed` is not live: it's a
+/// terminal state the user must acknowledge (retry via `startPairing()`
+/// again, or `cancelPairing()`) rather than something that clears itself, so
+/// the message in it is guaranteed to still be there when the user next
+/// opens the menu.
+///
+/// `connecting` and `confirming` are deliberately separate phases, each with
+/// its own bound (see `AppState.connectTimeout` / `AppState.pressTimeout`).
+/// An earlier version of this type used a single `confirming` phase entered
+/// immediately on choice, with one deadline covering both connecting and
+/// pressing — closing the ghost-candidate hang, but leaving a candidate that
+/// connects late with too little of the press window, and showing the press
+/// countdown against a device that had already dropped mid-confirmation.
+/// Splitting the phase fixes both: the required press count (rolled once, in
+/// `AppState.chosenRequired`) survives a drop-and-reconnect unchanged, but
+/// the press clock in `confirming` only starts once the device is actually
+/// Armed.
 enum PairingPhase: Equatable {
     case inactive
     case searching([DeviceCandidate])
+    case connecting(candidate: DeviceCandidate)
     case confirming(candidate: DeviceCandidate, remaining: Int)
     case failed(String)
 }
@@ -44,15 +58,27 @@ final class AppState {
     private var probeTimer: Timer?
     private var probeInFlight = false
     /// Non-nil for the duration of `.confirming`. Owns the press count and
-    /// the deadline for the candidate currently being confirmed.
+    /// the deadline for the candidate currently being confirmed. `nil` during
+    /// `.connecting` — there is nothing to count presses against yet.
     private var confirmation: PairingConfirmation?
-    /// Fires once, at the pairing deadline, so a candidate that never sends
-    /// a button event (the ghost-candidate case: it stopped advertising and
-    /// `connect()` never calls back) still resolves to `.failed` instead of
-    /// leaving `.confirming` waiting forever. A button press reaching the
-    /// deadline first is handled by `consume(_:at:)` directly; this timer is
-    /// only needed for the all-silence case.
-    private var pairingTimer: Timer?
+    /// The press count rolled once, in `choosePairingCandidate(_:)`, for the
+    /// candidate currently being paired. Lives across `.connecting` and
+    /// `.confirming` — including a drop-and-reconnect round trip between the
+    /// two — so the number the user was told never changes mid-flow.
+    /// `nil` outside an active `.connecting`/`.confirming` session.
+    private var chosenRequired: Int?
+    /// Fires once, at `connectTimeout`, so a candidate that never arms — the
+    /// ghost-candidate case (it stopped advertising and `connect()` never
+    /// calls back), or an ordinary drop mid-confirmation whose reconnect
+    /// never completes — still resolves to `.failed` instead of leaving
+    /// `.connecting` waiting forever. Live only during `.connecting`.
+    private var connectTimer: Timer?
+    /// Fires once, at `pressTimeout`, so a candidate that arms but never
+    /// receives enough presses resolves to `.failed` instead of leaving
+    /// `.confirming` waiting forever. A press reaching the deadline first is
+    /// handled by `consume(_:at:)` directly; this timer is only needed for
+    /// the no-more-presses case. Live only during `.confirming`.
+    private var pressTimer: Timer?
     /// Action in flight. Presses that arrive before the previous Action
     /// returns from the queue are dropped, not queued — a stale toggle,
     /// executed with a delay after a burst of presses, is worse than not
@@ -73,12 +99,30 @@ final class AppState {
     /// outside of a call there's nothing to poll.
     private static let probeInterval: TimeInterval = 3.0
 
-    /// How long, from choosing a candidate, the user has to both let it
-    /// connect and press its button the required number of times. One
-    /// deadline covers both jobs — see the ghost-candidate design note on
-    /// `choosePairingCandidate(_:)`. Not `private`: `AppStateTests` crosses
-    /// it deliberately via the injected clock.
-    static let pairingTimeout: TimeInterval = 20.0
+    /// How long a chosen candidate has to reach Armed before pairing gives
+    /// up on it — covers both the initial connect and any reconnect after a
+    /// mid-confirmation drop (`.confirming` falls back to `.connecting` on
+    /// disconnect; see the `onState` handler). 10s is generous for a BLE
+    /// connect plus service discovery on a device that's actually there;
+    /// past that, it isn't coming. Not `private`: `AppStateTests` crosses it
+    /// deliberately via the injected clock.
+    static let connectTimeout: TimeInterval = 10.0
+
+    /// How long the user has to complete the press count once the candidate
+    /// is Armed. Starts fresh every time `.confirming` is entered — after
+    /// the initial arming and after any reconnect — so a slow connection
+    /// never eats into press time. 15s comfortably covers the maximum of 5
+    /// presses at a deliberate human pace. Not `private`: `AppStateTests`
+    /// crosses it deliberately via the injected clock.
+    static let pressTimeout: TimeInterval = 15.0
+
+    /// Distinct failure messages for the two bounds, so the user is told
+    /// which one actually happened rather than reading a message that
+    /// doesn't match what occurred — the class of defect Finding 1 (fix
+    /// round 1) exists to remove. Not `private`, for the same reason as the
+    /// timeouts above.
+    static let connectFailureMessage = "Kapsel nie odpowiedział w wyznaczonym czasie."
+    static let pressFailureMessage = "Nie potwierdzono wyboru w wyznaczonym czasie — spróbuj ponownie."
 
     /// Scripts run off the main thread. `NSAppleScript` blocks for the
     /// duration of the exchange with the browser, and on first use also for
@@ -114,21 +158,60 @@ final class AppState {
         connection.onState = { [weak self] state in
             guard let self else { return }
             deviceState = state
+            switch pairing {
+            case .connecting(let candidate):
+                // Only Armed advances the phase — .disconnected/.searching/
+                // .error while still connecting just means the bound hasn't
+                // been reached yet; connectTimer is already running and
+                // covers all of them uniformly.
+                if state == .armed, let required = chosenRequired {
+                    pairing = .confirming(candidate: candidate, remaining: required)
+                    startPressTimer(required: required)
+                }
+            case .confirming(let candidate, _):
+                // The connection dropped before confirmation finished.
+                // TrikiConnection already re-issues a pending connect() on
+                // its own (see didDisconnectPeripheral) — this just gives
+                // that reconnect attempt a fresh, bounded .connecting window
+                // instead of leaving a press countdown on screen against a
+                // device that's no longer there (Finding 1, fix round 1).
+                // chosenRequired is untouched, so a later re-arm resumes
+                // with the same count the user was originally told.
+                if state != .armed {
+                    confirmation = nil
+                    pairing = .connecting(candidate: candidate)
+                    startConnectTimer()
+                }
+            case .inactive, .searching, .failed:
+                break
+            }
             updateProbing()
         }
         connection.onBattery = { [weak self] in self?.battery = $0 }
         connection.onRSSI = { [weak self] in self?.rssi = $0 }
         connection.onEvent = { [weak self] event in
             guard let self else { return }
-            // Only the confirming phase intercepts presses — while merely
-            // browsing candidates (.searching), a saved device that's still
-            // connected keeps controlling Meet exactly as before pairing
-            // started (see the "change device" note on startPairing()).
-            if case .confirming = pairing, var pending = confirmation {
-                let outcome = pending.consume(event, at: self.now())
-                confirmation = pending
-                handlePairingOutcome(outcome)
-            } else {
+            switch pairing {
+            case .confirming:
+                // Only the confirming phase intercepts presses — while
+                // merely browsing candidates (.searching) or waiting to
+                // connect (.connecting), a saved device that's still
+                // connected keeps controlling Meet exactly as before pairing
+                // started (see the "change device" note on startPairing()).
+                if var pending = confirmation {
+                    let outcome = pending.consume(event, at: self.now())
+                    confirmation = pending
+                    handlePairingOutcome(outcome)
+                }
+            case .connecting:
+                // No legitimate press can arrive here: the candidate isn't
+                // Armed yet, and choose() already disconnected whatever was
+                // previously connected. An event reaching this branch would
+                // be unexpected — drop it rather than let it either count
+                // toward a confirmation that doesn't exist yet or fire an
+                // Action for an unconfirmed device.
+                break
+            case .inactive, .searching, .failed:
                 perform(event == .press ? .microphone : .camera)
             }
         }
@@ -218,15 +301,16 @@ final class AppState {
     /// undisturbed until a new one is actually confirmed — see
     /// `choosePairingCandidate(_:)` and `TrikiConnection.startPairing()`.
     ///
-    /// Guards against two cases: a session already `.searching` or
-    /// `.confirming` is left alone rather than silently replaced (a second
-    /// call would otherwise discard a chosen candidate's `PairingConfirmation`
-    /// while its connection stayed live — flagged in Task 2's review). A
-    /// `.failed` phase, by contrast, is not live — this is also how the menu's
-    /// "back to the list" action re-enters discovery after a timeout.
+    /// Guards against two cases: a session already `.searching`,
+    /// `.connecting`, or `.confirming` is left alone rather than silently
+    /// replaced (a second call would otherwise discard a chosen candidate's
+    /// bookkeeping while its connection stayed live — flagged in Task 2's
+    /// review). A `.failed` phase, by contrast, is not live — this is also
+    /// how the menu's "back to the list" action re-enters discovery after a
+    /// timeout.
     func startPairing() {
         switch pairing {
-        case .searching, .confirming: return
+        case .searching, .connecting, .confirming: return
         case .inactive, .failed: break
         }
         pairing = .searching([])
@@ -234,57 +318,87 @@ final class AppState {
         updateProbing()
     }
 
-    /// Picks a candidate from the current list, connects to it, and starts
-    /// the press-count confirmation for it.
+    /// Picks a candidate from the current list and connects to it. Rolls the
+    /// required press count exactly once, here — it survives unchanged into
+    /// `.confirming`, and across any drop-and-reconnect, via `chosenRequired`.
     ///
     /// **Ghost-candidate hang (Task 2 review):** `connect()` has no timeout
     /// of its own, and a capsule that stopped advertising mid-scan can still
     /// be sitting in `candidates` — chosen, its connection would otherwise
-    /// hang forever with the app stuck on "searching". This does not wait
-    /// for the connection to succeed before starting the clock: `pairing`
-    /// moves to `.confirming` immediately, with the same deadline that
-    /// bounds the press count also bounding the connect attempt. If the
-    /// candidate is gone, no button events will ever arrive, `pairingTimer`
-    /// fires at the deadline regardless, and `.failed` follows — the exact
-    /// same path as a live candidate whose owner presses too slowly. One
-    /// mechanism closes both the hang and the ordinary timeout, and there is
-    /// no separate "connecting" phase to get stuck in because none is ever
-    /// entered.
+    /// hang forever with the app stuck on "searching". `pairing` moves to
+    /// `.connecting` immediately and `startConnectTimer()` bounds it: if the
+    /// candidate never arms, `checkConnectDeadline()` fails pairing with
+    /// `connectFailureMessage` regardless of whether the candidate is gone or
+    /// just slow. The `onState` handler is what promotes `.connecting` to
+    /// `.confirming` once the device actually arms — see its comment for the
+    /// symmetric case of a drop after that point.
     ///
-    /// The alternative the brief offered — evicting candidates that stop
-    /// advertising — was not implemented: the brief's own note that a bound
-    /// is required either way (the device can still vanish between the list
-    /// being drawn and the row being clicked) makes it strictly additional
-    /// complexity in `TrikiConnection`, not a substitute for the bound.
+    /// **Fix round 1 (Finding 1):** an earlier version skipped `.connecting`
+    /// entirely and started the press clock at the moment of choice, so a
+    /// candidate that took most of the connect budget to arm left the user
+    /// almost no time to press, and a connect-timeout and a press-timeout
+    /// were indistinguishable to the user. Splitting the phase here fixes
+    /// both — see the type-level comment on `PairingPhase`.
+    ///
+    /// The alternative the brief offered for the hang — evicting candidates
+    /// that stop advertising — was not implemented: the brief's own note
+    /// that a bound is required either way (the device can still vanish
+    /// between the list being drawn and the row being clicked) makes it
+    /// strictly additional complexity in `TrikiConnection`, not a substitute
+    /// for the bound.
     func choosePairingCandidate(_ id: UUID) {
         guard case .searching(let candidates) = pairing,
               let candidate = candidates.first(where: { $0.id == id }) else { return }
         connection.choose(id)
-        let required = PairingConfirmation.randomRequirement()
-        confirmation = PairingConfirmation(required: required, timeout: Self.pairingTimeout, startedAt: now())
-        pairing = .confirming(candidate: candidate, remaining: required)
+        chosenRequired = PairingConfirmation.randomRequirement()
+        confirmation = nil
+        pairing = .connecting(candidate: candidate)
         updateProbing()
-        pairingTimer?.invalidate()
-        pairingTimer = Timer.scheduledTimer(withTimeInterval: Self.pairingTimeout, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.checkPairingDeadline() }
-        }
+        startConnectTimer()
     }
 
     /// Aborts pairing at any phase and restores whatever was connected
     /// before `startPairing()` — a no-op if nothing is in progress.
     func cancelPairing() {
         guard pairing != .inactive else { return }
-        pairingTimer?.invalidate()
-        pairingTimer = nil
+        connectTimer?.invalidate()
+        connectTimer = nil
+        pressTimer?.invalidate()
+        pressTimer = nil
         confirmation = nil
+        chosenRequired = nil
         connection.cancelPairing()
         pairing = .inactive
         updateProbing()
     }
 
+    /// Starts (or restarts) the bound on getting the chosen candidate
+    /// connected and Armed. Invalidates any running `pressTimer` — the two
+    /// timers are mutually exclusive, one per live phase.
+    private func startConnectTimer() {
+        pressTimer?.invalidate()
+        pressTimer = nil
+        connectTimer?.invalidate()
+        connectTimer = Timer.scheduledTimer(withTimeInterval: Self.connectTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkConnectDeadline() }
+        }
+    }
+
+    /// Starts the press-count bound, fresh, once the candidate is Armed.
+    /// Invalidates `connectTimer` — its job is done for this arming.
+    private func startPressTimer(required: Int) {
+        connectTimer?.invalidate()
+        connectTimer = nil
+        confirmation = PairingConfirmation(required: required, timeout: Self.pressTimeout, startedAt: now())
+        pressTimer?.invalidate()
+        pressTimer = Timer.scheduledTimer(withTimeInterval: Self.pressTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkPressDeadline() }
+        }
+    }
+
     /// Applies the outcome of feeding the `PairingConfirmation` a press or a
     /// deadline check. Shared by the press path (`onEvent`) and the timer
-    /// path (`checkPairingDeadline()`) so both end up in exactly the same
+    /// path (`checkPressDeadline()`) so both end up in exactly the same
     /// place.
     private func handlePairingOutcome(_ outcome: PairingConfirmation.Outcome) {
         switch outcome {
@@ -293,21 +407,23 @@ final class AppState {
                 pairing = .confirming(candidate: candidate, remaining: remaining)
             }
         case .confirmed:
-            pairingTimer?.invalidate()
-            pairingTimer = nil
+            pressTimer?.invalidate()
+            pressTimer = nil
             confirmation = nil
+            chosenRequired = nil
             connection.confirmPairing()
             pairing = .inactive
             updateProbing()
         case .timedOut:
-            pairingTimer?.invalidate()
-            pairingTimer = nil
+            pressTimer?.invalidate()
+            pressTimer = nil
             confirmation = nil
-            // Tears down the stuck or unconfirmed candidate and restores the
+            chosenRequired = nil
+            // Tears down the unconfirmed candidate and restores the
             // previously saved device's suspended connection, if there was
             // one — same restoration `cancelPairing()` relies on.
             connection.cancelPairing()
-            pairing = .failed("Nie udało się potwierdzić wyboru w wyznaczonym czasie.")
+            pairing = .failed(Self.pressFailureMessage)
             updateProbing()
         }
     }
@@ -327,10 +443,11 @@ final class AppState {
     /// The probe has no business running during pairing — while confirming,
     /// presses are consumed by `PairingConfirmation` and never reach Meet, so
     /// there is nothing a probe result would explain; while merely browsing
-    /// candidates, querying the browser competes for the same script queue a
-    /// user action on the still-connected saved device might need. Pairing
-    /// ending (confirmed, cancelled, or failed) re-evaluates immediately, so
-    /// probing resumes at once if the device is still Armed.
+    /// candidates or waiting to connect, querying the browser competes for
+    /// the same script queue a user action on the still-connected saved
+    /// device might need. Pairing ending (confirmed, cancelled, or failed)
+    /// re-evaluates immediately, so probing resumes at once if the device is
+    /// still Armed.
     private func updateProbing() {
         if deviceState == .armed, pairing == .inactive {
             startProbing()
@@ -423,13 +540,32 @@ final class AppState {
         )
     }
 
-    /// Evaluates whether the pairing deadline has passed, without waiting on
-    /// the real `pairingTimer`. A no-op outside `.confirming`.
+    /// Evaluates whether the connect deadline has passed, without waiting on
+    /// the real `connectTimer`. A no-op outside `.connecting`.
     ///
     /// Package visibility (not `private`), same reasoning as `refreshTarget()`:
     /// tests force a timeout deterministically through the injected `now`
     /// clock instead of scheduling and waiting on a real `Timer`.
-    func checkPairingDeadline() {
+    func checkConnectDeadline() {
+        guard case .connecting = pairing else { return }
+        connectTimer?.invalidate()
+        connectTimer = nil
+        confirmation = nil
+        chosenRequired = nil
+        // Tears down the stuck candidate and restores the previously saved
+        // device's suspended connection, if there was one.
+        connection.cancelPairing()
+        pairing = .failed(Self.connectFailureMessage)
+        updateProbing()
+    }
+
+    /// Evaluates whether the press deadline has passed, without waiting on
+    /// the real `pressTimer`. A no-op outside `.confirming`.
+    ///
+    /// Package visibility (not `private`), same reasoning as `refreshTarget()`:
+    /// tests force a timeout deterministically through the injected `now`
+    /// clock instead of scheduling and waiting on a real `Timer`.
+    func checkPressDeadline() {
         guard case .confirming = pairing, var pending = confirmation else { return }
         let outcome = pending.tick(at: now())
         confirmation = pending

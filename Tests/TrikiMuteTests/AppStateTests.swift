@@ -213,6 +213,25 @@ private final class FakeClock {
     var now: TimeInterval = 0
 }
 
+/// Drives `state` from `.searching` through `choosePairingCandidate(_:)` and
+/// arming, landing in `.confirming`. Shared setup for every test that needs
+/// to be past `.connecting` — none of those tests are about connecting
+/// itself, so they shouldn't have to re-derive this each time.
+@MainActor
+private func chooseAndArmCandidate(
+    _ state: AppState,
+    _ connection: FakeDeviceConnection,
+    name: String = "Kapsel-A",
+    rssi: Int = -40
+) -> UUID {
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: name, rssi: rssi)])
+    state.choosePairingCandidate(id)
+    connection.onState?(.armed)
+    return id
+}
+
 @Test @MainActor func pressDuringConfirmationDoesNotReachMeet() {
     let connection = FakeDeviceConnection()
     // If perform() ran, this response would be consumed — proof by
@@ -223,13 +242,10 @@ private final class FakeClock {
     let clock = FakeClock()
     let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
 
-    state.startPairing()
-    let id = UUID()
-    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
-    state.choosePairingCandidate(id)
+    _ = chooseAndArmCandidate(state, connection)
 
     guard case .confirming = state.pairing else {
-        Issue.record("expected .confirming after choosing a candidate")
+        Issue.record("expected .confirming once the candidate is armed")
         return
     }
 
@@ -246,13 +262,10 @@ private final class FakeClock {
     let clock = FakeClock()
     let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
 
-    state.startPairing()
-    let id = UUID()
-    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
-    state.choosePairingCandidate(id)
+    _ = chooseAndArmCandidate(state, connection)
 
     guard case .confirming(_, let required) = state.pairing else {
-        Issue.record("expected .confirming after choosing a candidate")
+        Issue.record("expected .confirming once the candidate is armed")
         return
     }
 
@@ -262,32 +275,39 @@ private final class FakeClock {
 
     #expect(state.pairing == .inactive)
     #expect(connection.confirmPairingCalled)
-    // Presses spent on confirmation must never have reached the script queue.
-    #expect(queue.runCount == 0)
+    // Presses spent on confirmation must never have triggered a Meet Action —
+    // lastAction stays at its initial placeholder. (queue.runCount can be
+    // nonzero here: once pairing ends, updateProbing() correctly resumes the
+    // probe for the now-Armed, now-confirmed device — a probe, not an Action.)
+    #expect(state.lastAction == "—")
 }
 
-@Test @MainActor func pairingTimeoutFailsWithoutPersisting() {
+/// The plain press-timeout case: the candidate connects and arms fine, the
+/// user simply doesn't press enough times before `pressTimeout`. Distinct
+/// from `candidateThatNeverArmsFailsWithConnectSpecificMessage` below —
+/// fix round 1 split what used to be one shared timeout into two, precisely
+/// so these two causes are no longer indistinguishable to the user.
+@Test @MainActor func pressTimeoutFailsWithoutPersisting() {
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
     let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
 
-    state.startPairing()
-    let id = UUID()
-    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
-    state.choosePairingCandidate(id)
-    // The candidate connects fine this time — the user simply doesn't press
-    // enough times before the deadline.
-    connection.onState?(.armed)
-
-    clock.now += AppState.pairingTimeout + 1
-    state.checkPairingDeadline()
-
-    guard case .failed = state.pairing else {
-        Issue.record("expected .failed after the deadline passed")
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
         return
     }
+
+    clock.now += AppState.pressTimeout + 1
+    state.checkPressDeadline()
+
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed after the press deadline passed")
+        return
+    }
+    #expect(message == AppState.pressFailureMessage)
     #expect(!connection.confirmPairingCalled)
 }
 
@@ -301,6 +321,11 @@ private final class FakeClock {
     let id = UUID()
     connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
     state.choosePairingCandidate(id)
+
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting right after choosing, before arming")
+        return
+    }
 
     state.cancelPairing()
 
@@ -326,10 +351,11 @@ private final class FakeClock {
 
 /// The ghost-candidate hang found in Task 2's review: a capsule that stops
 /// advertising mid-scan stays in the list, and `connect()` on it never times
-/// out on its own. This pins that choosing it now fails cleanly — within the
-/// same bounded deadline used for press confirmation — instead of leaving
-/// pairing stuck on "searching" forever.
-@Test @MainActor func candidateThatNeverConnectsFailsWithoutHanging() {
+/// out on its own. Pins that choosing it now fails cleanly — bounded by
+/// `connectTimeout` — instead of leaving pairing stuck on "searching"
+/// forever, and that the failure message is the connect-specific one, not
+/// the press-timeout message (fix round 1, Finding 1).
+@Test @MainActor func candidateThatNeverArmsFailsWithConnectSpecificMessage() {
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
@@ -343,17 +369,110 @@ private final class FakeClock {
     // Deliberately no connection.onState?(.armed) — the candidate vanished
     // and CoreBluetooth's connect() never calls back at all.
 
-    clock.now += AppState.pairingTimeout + 1
-    state.checkPairingDeadline()
+    clock.now += AppState.connectTimeout + 1
+    state.checkConnectDeadline()
 
-    guard case .failed = state.pairing else {
-        Issue.record("expected .failed, not stuck in .confirming or .searching")
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed, not stuck in .connecting or .searching")
         return
     }
+    #expect(message == AppState.connectFailureMessage)
+    #expect(message != AppState.pressFailureMessage)
     #expect(connection.cancelPairingCalled)
 
     // No hang: pairing can be started again right away.
     state.startPairing()
     #expect(state.pairing == .searching([]))
     #expect(connection.startPairingCalled)
+}
+
+/// Finding 1 (fix round 1): a candidate that takes nearly the whole connect
+/// budget to arm must still get the *full* press window afterward, not
+/// whatever was left over from a single shared deadline.
+@Test @MainActor func candidateThatArmsLateStillGetsFullPressWindow() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting immediately after choosing")
+        return
+    }
+
+    // Connecting eats nearly the entire connect budget...
+    clock.now += AppState.connectTimeout - 1
+    connection.onState?(.armed)
+
+    guard case .confirming(_, let required) = state.pairing else {
+        Issue.record("expected .confirming once armed")
+        return
+    }
+
+    // ...but the press window starts fresh from the moment of arming, not
+    // from the moment the candidate was chosen — so nearly the full press
+    // deadline is still available, well past what the old shared budget
+    // would have allowed.
+    clock.now += AppState.pressTimeout - 1
+    for _ in 0..<required {
+        connection.onEvent?(.press)
+    }
+
+    #expect(state.pairing == .inactive)
+    #expect(connection.confirmPairingCalled)
+}
+
+/// Finding 1 (fix round 1), second part: a drop mid-confirmation must not
+/// leave a stale press countdown on screen against a device that's gone.
+/// Pairing falls back to `.connecting` — distinctly rendered by the menu —
+/// rather than staying in `.confirming` with no way to tell the user what
+/// actually happened.
+@Test @MainActor func dropMidConfirmationReturnsToConnectingInsteadOfStaleCountdown() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+
+    // The device drops before confirmation completes.
+    connection.onState?(.disconnected)
+
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting again after a mid-confirmation drop")
+        return
+    }
+}
+
+/// The required press count is rolled exactly once per candidate — a
+/// drop-and-reconnect must not change the number the user was already told.
+@Test @MainActor func dropMidConfirmationPreservesTheOriginalRequiredCount() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming(_, let requiredBeforeDrop) = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+
+    connection.onState?(.disconnected)
+    connection.onState?(.armed)
+
+    guard case .confirming(_, let requiredAfterReconnect) = state.pairing else {
+        Issue.record("expected .confirming again after reconnecting")
+        return
+    }
+    #expect(requiredAfterReconnect == requiredBeforeDrop)
 }
