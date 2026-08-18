@@ -41,17 +41,31 @@ public enum MeetScripts {
         """
     }
 
+    /// Escapuje tekst wstawiany do literału tekstowego AppleScript.
+    /// Bez tego cudzysłów rozerwałby łańcuch, a odwrotny ukośnik zostałby
+    /// zjedzony przez AppleScript, zanim JavaScript zdążyłby go zobaczyć.
+    /// Kolejność ma znaczenie: najpierw ukośniki, potem cudzysłowy.
+    private static func escapuj(_ tekst: String) -> String {
+        tekst
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     /// Opakowuje JS w skrypt szukający Celu wśród kart danej przeglądarki.
     /// Karta nie musi być aktywna ani na wierzchu — to jest cały sens Apple
     /// Events zamiast skrótu klawiszowego.
+    ///
+    /// Oba wstawiane teksty są escapowane, żeby funkcja była poprawna dla
+    /// dowolnego wejścia, a nie tylko dla generatorów trzymających się
+    /// apostrofów.
     public static func appleScript(browser: String, javascript: String) -> String {
         """
-        tell application "\(browser)"
+        tell application "\(escapuj(browser))"
             if it is not running then return "NONE"
             repeat with w in windows
                 repeat with t in tabs of w
                     if URL of t contains "meet.google.com" then
-                        set wynik to execute t javascript "\(javascript)"
+                        set wynik to execute t javascript "\(escapuj(javascript))"
                         if wynik is not "NONE" then return wynik
                     end if
                 end repeat

@@ -6,7 +6,7 @@ public protocol ScriptRunner {
     func run(_ source: String) throws -> String
 }
 
-/// Wynik sondy: gdzie jest Cel i w jakim jest stanie.
+/// Gdzie jest Cel i w jakim jest stanie.
 public struct ProbeResult: Equatable, Sendable {
     public let browser: String
     public let micMuted: Bool
@@ -27,6 +27,16 @@ public enum ActionOutcome: Equatable, Sendable {
     case failed(String)
 }
 
+/// Wynik sondy. To samo rozróżnienie co w `ActionOutcome` i z tego samego
+/// powodu: gdyby awaria zwracała „brak Celu", pasek menu twierdziłby, że
+/// wszystko gra, podczas gdy w rzeczywistości cofnięto zgodę na Automation
+/// albo wyłączono wykonywanie JavaScriptu w przeglądarce.
+public enum ProbeOutcome: Equatable, Sendable {
+    case target(ProbeResult)
+    case noTarget
+    case failed(String)
+}
+
 /// Steruje mikrofonem i kamerą w Celu.
 public struct MeetController {
     private let runner: ScriptRunner
@@ -36,19 +46,31 @@ public struct MeetController {
     }
 
     /// Szuka Celu w podanych przeglądarkach, w kolejności. Zwraca stan
-    /// pierwszej karty, w której jest komplet przycisków, albo `nil`.
-    public func probe(browsers: [String]) -> ProbeResult? {
+    /// pierwszej karty, w której jest komplet przycisków; jeśli żadna nie ma
+    /// Celu, rozróżnia „nigdzie nie ma rozmowy" od „nie dało się sprawdzić".
+    public func probe(browsers: [String]) -> ProbeOutcome {
+        var ostatniBlad: String?
         for browser in browsers {
-            guard let odpowiedz = wykonaj(MeetScripts.probeJS(), in: browser),
-                  odpowiedz.count == 2 else { continue }
-            let znaki = Array(odpowiedz)
-            return ProbeResult(
+            let skrypt = MeetScripts.appleScript(
                 browser: browser,
-                micMuted: znaki[0] == "1",
-                cameraOff: znaki[1] == "1"
+                javascript: MeetScripts.probeJS()
             )
+            do {
+                let odpowiedz = try runner.run(skrypt)
+                // Sentinel „NONE" ma cztery znaki, więc odpada tu naturalnie.
+                guard odpowiedz.count == 2 else { continue }
+                let znaki = Array(odpowiedz)
+                return .target(ProbeResult(
+                    browser: browser,
+                    micMuted: znaki[0] == "1",
+                    cameraOff: znaki[1] == "1"
+                ))
+            } catch {
+                ostatniBlad = String(describing: error)
+            }
         }
-        return nil
+        if let ostatniBlad { return .failed(ostatniBlad) }
+        return .noTarget
     }
 
     /// Wykonuje Akcję w pierwszej przeglądarce, w której jest Cel.
@@ -66,11 +88,5 @@ public struct MeetController {
         }
         if let ostatniBlad { return .failed(ostatniBlad) }
         return .noTarget
-    }
-
-    private func wykonaj(_ javascript: String, in browser: String) -> String? {
-        let skrypt = MeetScripts.appleScript(browser: browser, javascript: javascript)
-        guard let odpowiedz = try? runner.run(skrypt), odpowiedz != "NONE" else { return nil }
-        return odpowiedz
     }
 }

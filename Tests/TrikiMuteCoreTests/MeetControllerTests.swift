@@ -2,7 +2,10 @@ import Foundation
 import Testing
 @testable import TrikiMuteCore
 
-/// Wykonawca-atrapa: zwraca zaprogramowane odpowiedzi i zapamiętuje skrypty.
+/// Wykonawca-atrapa: oddaje kolejne zaprogramowane odpowiedzi i zapamiętuje
+/// wykonane skrypty. Wartość "THROW" oznacza, że dane wywołanie ma rzucić —
+/// dzięki temu da się odtworzyć sytuację, w której jedna przeglądarka zawodzi,
+/// a druga odpowiada normalnie.
 private final class FakeRunner: ScriptRunner {
     var odpowiedzi: [String]
     private(set) var wykonane: [String] = []
@@ -11,7 +14,9 @@ private final class FakeRunner: ScriptRunner {
 
     func run(_ source: String) throws -> String {
         wykonane.append(source)
-        return odpowiedzi.isEmpty ? "NONE" : odpowiedzi.removeFirst()
+        let odpowiedz = odpowiedzi.isEmpty ? "NONE" : odpowiedzi.removeFirst()
+        if odpowiedz == "THROW" { throw RunnerError() }
+        return odpowiedz
     }
 }
 
@@ -24,7 +29,7 @@ private final class ThrowingRunner: ScriptRunner {
 @Test func sondaZwracaBrakCeluGdyZadnaPrzegladarkaNieMaMeet() {
     let runner = FakeRunner(["NONE", "NONE"])
     let c = MeetController(runner: runner)
-    #expect(c.probe(browsers: ["Google Chrome", "Brave Browser"]) == nil)
+    #expect(c.probe(browsers: ["Google Chrome", "Brave Browser"]) == .noTarget)
     #expect(runner.wykonane.count == 2)
 }
 
@@ -33,22 +38,43 @@ private final class ThrowingRunner: ScriptRunner {
     let runner = FakeRunner(["10"])
     let c = MeetController(runner: runner)
     let wynik = c.probe(browsers: ["Google Chrome"])
-    #expect(wynik == ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false))
+    #expect(wynik == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false)))
 }
 
 @Test func sondaZatrzymujeSieNaPierwszejPrzegladarceZCelem() {
     let runner = FakeRunner(["01", "11"])
     let c = MeetController(runner: runner)
     let wynik = c.probe(browsers: ["Brave Browser", "Google Chrome"])
-    #expect(wynik?.browser == "Brave Browser")
-    #expect(wynik?.micMuted == false)
-    #expect(wynik?.cameraOff == true)
+    #expect(wynik == .target(ProbeResult(browser: "Brave Browser", micMuted: false, cameraOff: true)))
     #expect(runner.wykonane.count == 1)
 }
 
-@Test func sondaPomijaPrzegladarkeKtoraRzucilaBlad() {
+@Test func sondaZglaszaBladGdyWykonawcaRzuca() {
+    // Kluczowe rozróżnienie: awaria nie może udawać braku rozmowy, bo pasek
+    // menu pokazałby wtedy „wszystko gra" przy cofniętej zgodzie na Automation.
     let c = MeetController(runner: ThrowingRunner())
-    #expect(c.probe(browsers: ["Google Chrome"]) == nil)
+    if case .failed = c.probe(browsers: ["Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed")
+    }
+}
+
+@Test func sondaZnajdujeCelMimoBleduPierwszejPrzegladarki() {
+    let runner = FakeRunner(["THROW", "10"])
+    let c = MeetController(runner: runner)
+    let wynik = c.probe(browsers: ["Brave Browser", "Google Chrome"])
+    #expect(wynik == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false)))
+}
+
+@Test func sondaZglaszaBladGdyJednaPrzegladarkaRzucaADrugaNieMaCelu() {
+    let runner = FakeRunner(["THROW", "NONE"])
+    let c = MeetController(runner: runner)
+    if case .failed = c.probe(browsers: ["Brave Browser", "Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
 }
 
 @Test func akcjaZglaszaBrakCelu() {
@@ -70,6 +96,29 @@ private final class ThrowingRunner: ScriptRunner {
     } else {
         Issue.record("Oczekiwano .failed")
     }
+}
+
+@Test func akcjaUdajeSieGdyPierwszaPrzegladarkaRzucaADrugaDziala() {
+    let runner = FakeRunner(["THROW", "OK"])
+    let c = MeetController(runner: runner)
+    #expect(c.perform(.microphone, browsers: ["Brave Browser", "Google Chrome"]) == .performed)
+}
+
+@Test func akcjaZglaszaBladGdyJednaPrzegladarkaRzucaADrugaNieMaCelu() {
+    let runner = FakeRunner(["THROW", "NONE"])
+    let c = MeetController(runner: runner)
+    if case .failed = c.perform(.microphone, browsers: ["Brave Browser", "Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
+}
+
+@Test func javascriptZCudzyslowemJestEscapowany() {
+    // appleScript() musi być poprawne dla dowolnego wejścia, a nie polegać na
+    // tym, że generatory trzymają się apostrofów.
+    let s = MeetScripts.appleScript(browser: "Google Chrome", javascript: "return \"x\"")
+    #expect(s.contains("\\\"x\\\""))
 }
 
 @Test func skryptMikrofonuIKameryCelujaWRozneIndeksy() {
