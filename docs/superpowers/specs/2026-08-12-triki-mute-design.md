@@ -192,11 +192,24 @@ człowiekowi. Model dziś:
 1. Użytkownik uruchamia parowanie z paska menu — jest to naturalny pierwszy
    krok bez zapisanego urządzenia, a przy już zapisanym służy do jego zmiany
    (zastępuje dawny osobny „Zapomnij Kapsel" — wybranie i potwierdzenie
-   nowego urządzenia jest nadzbiorem zapominania starego).
+   nowego urządzenia jest nadzbiorem zapominania starego). Etykieta przycisku
+   („Paruj Kapsla" / „Zmień Kapsla") zależy od tego, czy identyfikator jest
+   zapisany — nie od bieżącego stanu połączenia, który może akurat pokazywać
+   błąd (np. wyłączony Bluetooth) mimo zapisanego urządzenia. Jeśli Bluetooth
+   nie jest gotowe, uruchomienie parowania odmawia startu i pokazuje
+   konkretną przyczynę zamiast fałszywie zgłaszać trwające skanowanie.
 2. `TrikiConnection` przełącza się w tryb rozpoznawania: skanuje i zgłasza
    pełną listę kandydatów (nazwa, RSSI) do `AppState`, zamiast łączyć się
    z pierwszym napotkanym. Dotychczasowe zapisane urządzenie, jeśli istnieje,
-   działa nietknięte przez cały czas przeglądania listy.
+   działa nietknięte przez cały czas przeglądania listy. Kapsel zasypia i nie
+   reklamuje się, dopóki ktoś nie naciśnie jego przycisku — lista przypomina
+   o tym wprost, żeby pusta lista nie wyglądała na awarię. Skanowanie ma
+   własny limit czasu (2 minuty): porzucone menu nie zostawia aplikacji
+   skanującej bez końca z wyłączoną sondą Meet. Zmiana stanu Bluetootha
+   w trakcie parowania (np. wyłączenie i włączenie) restartuje skanowanie
+   zamiast wznawiać zawieszone połączenie z zapisanym urządzeniem — inaczej
+   mogłoby przejąć sesję parowania i podmienić urządzenie, z którym aplikacja
+   faktycznie się łączy.
 3. Wybranie kandydata z listy łączy się z nim. Zanim faktycznie się uzbroi,
    aplikacja pokazuje osobną fazę „łączę się" — z jednym ograniczeniem czasu
    (dziś: 10 s) na dotarcie do Gotowości. `connect()` w CoreBluetooth nie ma
@@ -234,7 +247,11 @@ człowiekowi. Model dziś:
    przyczynę: powtarzające się rozłączenia, nie pojedynczy wolny krok.
 6. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
    Kapsel na stałe; od tej pory łączenie wraca do modelu Uzbrojenia opisanego
-   wyżej.
+   wyżej. Zapisywany jest identyfikator kandydata wybranego w kroku 3, nie
+   identyfikator urządzenia aktualnie połączonego — te dwa mogą się chwilowo
+   rozjechać w trakcie ponownego łączenia po rozłączeniu, a jedynym, który
+   faktycznie odpowiada na pytanie „które urządzenie użytkownik wybrał", jest
+   ten pierwszy.
 7. Trzy osobne ograniczenia czasu dają trzy osobne, trafne komunikaty
    o niepowodzeniu: „Kapsel nie odpowiedział" dla fazy łączenia, „nie
    potwierdzono wyboru" dla fazy naciśnięć, „Kapsel wielokrotnie się
@@ -269,7 +286,12 @@ słyszalny, cisza byłaby nieodróżnialna od awarii aplikacji.
 ## Interfejs
 
 Ikona w pasku menu pokazuje jednym rzutem oka: Kapsel rozłączony, uzbrojony,
-oraz — gdy istnieje Cel — czy mikrofon jest wyciszony.
+oraz — gdy istnieje Cel — czy mikrofon jest wyciszony. W trakcie parowania
+pokazuje osobny symbol niezależnie od tego wszystkiego: sonda Meet stoi przez
+cały czas parowania, więc ikona oparta na stanie mikrofonu twierdziłaby coś,
+czego aplikacja akurat nie ma jak wiedzieć — w tym w skrajnym przypadku, gdy
+dotychczasowe, zapisane urządzenie zostaje w tle Uzbrojone, a użytkownik
+dopiero przegląda listę kandydatów do zmiany.
 
 Rozwijane menu:
 
@@ -338,9 +360,27 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   poinformowane — a urządzenie migoczące szybciej niż którykolwiek z dwóch
   liczników cząstkowych mimo to kończy próbę porażką w ograniczonym czasie
   dzięki trzeciemu, nadrzędnemu limitowi, który restarty tamtych dwóch nie
-  odświeżają
+  odświeżają; dodatkowo (końcowa recenzja): odmowa uruchomienia parowania
+  nazywa przyczynę zamiast zgłaszać skanowanie, którego nie ma, odmowa
+  potwierdzenia trafia do użytkownika zamiast ciszy, przerwanie w fazie
+  potwierdzania nie zostawia żywego licznika po sobie, przerwanie z fazy
+  niepowodzenia wraca do stanu nieaktywnego i nie dziedziczy flagi
+  „rozłączono" do następnej próby, upływ czasu samego skanowania kończy się
+  porażką zamiast wiecznym „szukam", a ikona w trakcie parowania jest inna
+  niż w spoczynku
+- `TrikiConnection`: `CentralManaging` — wąski protokół nad pięcioma
+  wywołaniami `CBCentralManager`, którego faktycznie używa ten plik —
+  pozwala przypiąć testami jednostkowymi część inwariantów, które wcześniej
+  sprawdzał wyłącznie test ręczny: odmowę uruchomienia parowania bez
+  gotowego Bluetootha, odmowę potwierdzenia bez aktywnej sesji albo bez
+  wybranego kandydata, i to, że zmiana stanu Bluetootha w trakcie parowania
+  restartuje skanowanie zamiast wznawiać zapisane urządzenie (a bez sesji
+  w toku wznawia je dokładnie jak dotąd). Nie obejmuje `CBPeripheral` — nie
+  da się go stworzyć poza CoreBluetooth — więc ścieżka przechowująca
+  faktyczną tożsamość wybranego kandydata zostaje testem ręcznym.
 
-Test ręczny: warstwa CoreBluetooth na Kapslu, Akcje w prawdziwym Meet oraz
+Test ręczny: warstwa CoreBluetooth na Kapslu (w tym część inwariantów, których
+`CentralManaging` nie obejmuje — patrz wyżej), Akcje w prawdziwym Meet oraz
 pełny przebieg parowania (jeden i, jeśli dostępne, dwa Kapsle naraz).
 
 ## Niewiadome do rozstrzygnięcia pomiarem

@@ -45,7 +45,11 @@ kandydatów (nazwa i siła sygnału — przydaje się, gdy w zasięgu jest więc
 jeden) i potwierdzasz wybór, naciskając na nim przycisk tyle razy, ile pokaże
 menu. Dopiero komplet naciśnięć zapamiętuje urządzenie na stałe; naciśnięcia
 w trakcie potwierdzania nie wyciszają niczego w Meet. Parowanie da się przerwać
-w każdej chwili — dotychczasowe urządzenie zostaje wtedy nietknięte.
+w każdej chwili — dotychczasowe urządzenie zostaje wtedy nietknięte. Kapsel nie
+reklamuje się, dopóki nie naciśniesz jego przycisku — lista przypomina o tym,
+jeśli jest pusta — a samo szukanie ma limit czasu, więc porzucone menu nie
+zostawia aplikacji skanującej bez końca. W trakcie parowania ikona w pasku
+menu pokazuje osobny symbol, bo nie ma wtedy jak sprawdzić stanu mikrofonu.
 
 Kapsel zasypia i budzi go dopiero naciśnięcie przycisku, więc **pierwsze
 naciśnięcie po przerwie tylko go uzbraja** — budzi urządzenie i zestawia
