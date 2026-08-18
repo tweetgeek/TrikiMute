@@ -622,11 +622,11 @@ private func odtworz(
 }
 
 @Test func tuzPonizejProguToNacisniecie() {
-    var r = ButtonRecognizer(tuning: .init(hold: 1.0, debounce: 0.03, cooldown: 0.0))
+    var r = ButtonRecognizer(tuning: .init(hold: 0.4, debounce: 0.03, cooldown: 0.0))
     _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
-    let wtrakcie = odtworz(&r, wcisniety: true, przez: 0.95, od: 0.2)
+    let wtrakcie = odtworz(&r, wcisniety: true, przez: 0.35, od: 0.2)
     #expect(wtrakcie.isEmpty)
-    let po = odtworz(&r, wcisniety: false, przez: 0.2, od: 1.15)
+    let po = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.55)
     #expect(po == [.press])
 }
 
@@ -692,7 +692,7 @@ public struct ButtonRecognizer {
             self.cooldown = cooldown
         }
 
-        public static let domyslne = Tuning(hold: 1.0, debounce: 0.03, cooldown: 0.3)
+        public static let domyslne = Tuning(hold: 0.4, debounce: 0.03, cooldown: 0.3)
     }
 
     private let tuning: Tuning
@@ -1477,7 +1477,7 @@ Uruchom binarkę wprost, żeby widzieć logi. Przy pierwszym starcie macOS zapyt
 2. Naciśnij przycisk na Kapslu. Oczekiwane: pojawia się `uzbrojony`, a **to naciśnięcie nie wywołuje Akcji** — to jest sedno modelu Uzbrojenia.
 3. Otwórz rozmowę Meet, przełącz się do innej aplikacji.
 4. Naciśnij krótko. Oczekiwane: `Zdarzenie press → microphone → performed`, mikrofon się przełącza.
-5. Przytrzymaj ponad sekundę. Oczekiwane: `Zdarzenie hold → camera → performed` **w chwili przekroczenia progu**, jeszcze zanim puścisz przycisk, i tylko raz.
+5. Przytrzymaj około sekundy — czyli wyraźnie ponad próg 0,4 s. Oczekiwane: `Zdarzenie hold → camera → performed` **w chwili przekroczenia progu**, jeszcze zanim puścisz przycisk, i tylko raz.
 6. Odejdź z Kapslem poza zasięg i wróć. Oczekiwane: `rozlaczony`, potem `szukam`, potem `uzbrojony` bez restartu aplikacji.
 
 - [ ] **Step 4: Zweryfikuj brak fałszywych zdarzeń**
@@ -1845,7 +1845,7 @@ Google Meet na naciśnięcie przycisku kontrolera BLE **Żabka Triki** — bez
 zabierania focusu bieżącej aplikacji.
 
 - **Naciśnięcie** przycisku Kapsla przełącza mikrofon.
-- **Przytrzymanie** ponad sekundę przełącza kamerę.
+- **Przytrzymanie** dłuższe niż 0,4 s przełącza kamerę.
 
 Wiedza o protokole urządzenia pochodzi z siostrzanego projektu
 [TrikiScope](https://github.com/Maku-hub/TrikiScope).

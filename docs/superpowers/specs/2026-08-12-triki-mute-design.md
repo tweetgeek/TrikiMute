@@ -119,8 +119,9 @@ Komponent wykrywa zbocza: `0→1` = wciśnięcie, `1→0` = puszczenie.
   **natychmiast**, bez czekania na puszczenie; ustawiana jest flaga tłumiąca
   Naciśnięcie przy następującym puszczeniu
 
-Stałe do dostrojenia po pomiarach, trzymane w jednym miejscu: próg
-Przytrzymania 1,0 s, debounce zboczy 30 ms, cooldown po zdarzeniu 300 ms.
+Stałe trzymane w jednym miejscu: próg Przytrzymania **0,4 s**, debounce zboczy
+30 ms, cooldown po zdarzeniu 300 ms. Próg wynika z pomiaru na żywym Kapslu
+(`docs/findings/2026-08-12-kapsel.md`), nie z założenia.
 
 ### MeetController
 
@@ -259,8 +260,8 @@ Wszystkie są rozstrzygane przed napisaniem zależnego od nich kodu:
 1. Czy `data-is-muted` odróżnia mikrofon od kamery samym porządkiem w DOM.
 2. Czy Brave ma przełącznik „Allow JavaScript from Apple Events". Jeśli nie,
    dla Brave całe podejście Apple Events odpada i zostaje samo Chrome.
-3. Jak długo Kapsel zostaje wybudzony, czy zasypia mimo aktywnego połączenia
-   i ile wytrzymuje na ciągłym strumieniu 104 Hz.
+3. Ile Kapsel wytrzymuje na ciągłym strumieniu. Zmierzone zostanie na gotowej
+   aplikacji podczas prawdziwej rozmowy, a nie na skrypcie testowym.
 
 ## Kolejność budowy
 
