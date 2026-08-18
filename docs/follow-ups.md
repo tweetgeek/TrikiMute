@@ -8,6 +8,24 @@ Kolejność mniej więcej według wartości naprawy.
 
 ## Warte zrobienia przy następnym dotknięciu kodu
 
+**Jeden Apple Event na kartę zamiast jednego na przeglądarkę.** Stara ścieżka
+wysyłała **jedno** zdarzenie na przeglądarkę i cały obchód okien i kart
+odbywał się wewnątrz Chrome. Nowa pyta osobno o okna, potem o karty każdego
+okna, a potem o adres każdej karty — ScriptingBridge nie grupuje odczytów
+właściwości, więc przy dwóch oknach i trzydziestu kartach wychodzi około
+trzydziestu trzech synchronicznych zapytań na Instancję, co 3 sekundy, przez
+cały czas uzbrojenia. To budzi główny wątek przeglądarki jakieś 600 razy na
+minutę w imieniu narzędzia z paska menu — i zazębia się z wpisem o takcie
+sondy powyżej.
+
+Naprawa jest znana: `tabs.arrayByApplyingSelector(#selector(getter:
+ScriptableTab.URL))` pobiera adresy hurtowo, jedno zdarzenie na okno, po czym
+`ScriptingBridgeTab` powstaje wyłącznie dla kart, które trafiły w Meet — ścina
+ruch o jakieś 95%. Świadomie odłożone: dokłada nietestowanego kodu
+ScriptingBridge w pliku, którego jeszcze nie uruchomiono na prawdziwej
+przeglądarce, więc rozsądnie zrobić to razem z testem sprzętowym opisanym
+w sekcji „Niezweryfikowane na żywo", a nie przed nim.
+
 **Zrobione: zużycie baterii Kapsla przy stałym połączeniu.** Zmierzone na
 żywym urządzeniu: 98%→90% w ciągu jednej nocy, czyli około dwunastu dni
 czuwania zamiast tygodni, jakich należałoby oczekiwać po sprzęcie
