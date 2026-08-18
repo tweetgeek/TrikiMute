@@ -129,6 +129,10 @@ extension TrikiConnection: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            // Rozłączenie celowe: forget() wyzerował kapsel, zanim callback
+            // dotarł. Bez tej bramki „Zapomnij Kapsel" natychmiast łączyłby
+            // się z powrotem, a skan zapisywałby identyfikator na nowo.
+            guard peripheral.identifier == kapsel?.identifier else { return }
             rx = nil
             onState?(.rozlaczony)
             // Zawieszony connect() podniesie połączenie, gdy Kapsel wróci.
