@@ -484,6 +484,18 @@ final class AppState {
 
     /// Aborts pairing at any phase and restores whatever was connected
     /// before `startPairing()` — a no-op if nothing is in progress.
+    ///
+    /// `pairing` is assigned *before* calling into `connection` (final
+    /// review, Issue 5): `TrikiConnection.cancelPairing()` emits
+    /// `onState(.disconnected)` synchronously once a candidate had been
+    /// chosen, and the old order called `connection.cancelPairing()` while
+    /// `pairing` was still `.confirming` — so the reentrant `onState` handler
+    /// took the drop-and-reconnect branch and scheduled a fresh
+    /// `connectTimer` *after* this function's own invalidation had already
+    /// run, leaking a live timer underneath a teardown that was supposed to
+    /// leave none running. Setting `pairing` first means that by the time the
+    /// synchronous callback checks it, it already reads `.inactive`, so the
+    /// reentrant branch is never taken at all.
     func cancelPairing() {
         guard pairing != .inactive else { return }
         searchTimer?.invalidate()
@@ -497,9 +509,19 @@ final class AppState {
         confirmation = nil
         chosenRequired = nil
         droppedDuringAttempt = false
-        connection.cancelPairing()
         pairing = .inactive
+        connection.cancelPairing()
         updateProbing()
+    }
+
+    /// True while none of the pairing timers is currently scheduled. Exists
+    /// solely for `AppStateTests` to confirm a teardown path didn't leave a
+    /// timer running underneath a `pairing` value that has already moved past
+    /// it (final review, Issue 5) — `pairing` alone can't reveal that: every
+    /// teardown path's final assignment lands on the right value regardless
+    /// of whether a timer leaked underneath it.
+    var hasNoLivePairingTimers: Bool {
+        searchTimer == nil && attemptTimer == nil && connectTimer == nil && pressTimer == nil
     }
 
     /// Starts the bound on `.searching` finding nothing and nobody choosing
@@ -590,11 +612,15 @@ final class AppState {
             confirmation = nil
             chosenRequired = nil
             droppedDuringAttempt = false
+            // `pairing` assigned before calling into `connection` (final
+            // review, Issue 5) — see the comment on `cancelPairing()` for why
+            // the old order let a synchronous `onState(.disconnected)` leak a
+            // timer past this teardown.
+            pairing = .failed(Self.pressFailureMessage)
             // Tears down the unconfirmed candidate and restores the
             // previously saved device's suspended connection, if there was
             // one — same restoration `cancelPairing()` relies on.
             connection.cancelPairing()
-            pairing = .failed(Self.pressFailureMessage)
             updateProbing()
         }
     }
@@ -789,8 +815,10 @@ final class AppState {
         confirmation = nil
         chosenRequired = nil
         droppedDuringAttempt = false
-        connection.cancelPairing()
+        // `pairing` assigned before calling into `connection` (final review,
+        // Issue 5) — see the comment on `cancelPairing()`.
         pairing = .failed(Self.flappingFailureMessage)
+        connection.cancelPairing()
         updateProbing()
     }
 

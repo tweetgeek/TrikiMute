@@ -28,6 +28,13 @@ private final class FakeDeviceConnection: DeviceConnection {
     /// Controls what `confirmPairing()` reports back — flip to `false` to
     /// simulate the identity guard refusing (Issue 2, final review).
     var confirmPairingResult = true
+    /// When true, `cancelPairing()` synchronously emits `onState(.disconnected)`
+    /// before returning — mirrors what the real `TrikiConnection.cancelPairing()`
+    /// does once a candidate has been chosen, so a stale-assignment-order
+    /// defect in `AppState` (Issue 5, final review) would be exercised: the
+    /// reentrant callback would still see the phase this call was supposed to
+    /// be tearing down.
+    var cancelPairingEmitsDisconnected = false
 
     func start() { startCalled = true }
     func readRSSI() {}
@@ -38,7 +45,10 @@ private final class FakeDeviceConnection: DeviceConnection {
         return startPairingResult
     }
     func choose(_ id: UUID) { chosenID = id }
-    func cancelPairing() { cancelPairingCalled = true }
+    func cancelPairing() {
+        cancelPairingCalled = true
+        if cancelPairingEmitsDisconnected { onState?(.disconnected) }
+    }
     @discardableResult
     func confirmPairing() -> Bool {
         confirmPairingCalled = true
@@ -705,4 +715,101 @@ private func chooseAndArmCandidate(
     state.startPairing()
     #expect(state.iconName != "mic.fill")
     #expect(state.iconName != "mic.slash.fill")
+}
+
+/// Coverage gap the final review flagged: `.connecting` already drops button
+/// events (there is no confirmation to count them against yet, and the
+/// previously connected device was already disconnected by `choose(_:)`),
+/// but nothing pinned it.
+@Test @MainActor func pressDuringConnectingDoesNotReachMeet() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["OK"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting right after choosing, before arming")
+        return
+    }
+
+    connection.onEvent?(.press)
+
+    #expect(queue.runCount == 0)
+    #expect(state.lastAction == "—")
+}
+
+/// Issue 5: the old assignment order in `cancelPairing()` invalidated timers
+/// and only then called into `connection` — but `TrikiConnection.cancelPairing()`
+/// emits `onState(.disconnected)` synchronously once a candidate is chosen,
+/// so the reentrant callback still saw `.confirming`, took the
+/// drop-and-reconnect branch, and scheduled a fresh `connectTimer` *after*
+/// the invalidation that was supposed to be the end of it. `pairing` itself
+/// ends up `.inactive` either way — every teardown path's final assignment
+/// clobbers it regardless of ordering — so this checks `hasNoLivePairingTimers`
+/// too, which is the only place the leak is actually visible.
+@Test @MainActor func cancelDuringConfirmingLeavesNoLiveTimerBehind() {
+    let connection = FakeDeviceConnection()
+    connection.cancelPairingEmitsDisconnected = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+
+    state.cancelPairing()
+
+    #expect(state.pairing == .inactive)
+    #expect(state.hasNoLivePairingTimers)
+}
+
+/// Reachable from the menu's `.failed` case ("Anuluj parowanie"). Also pins
+/// that a fresh attempt afterward doesn't inherit `droppedDuringAttempt` from
+/// the failed one — `resetAfterDrop` must start `false` for a brand-new
+/// candidate that has never dropped.
+@Test @MainActor func cancelFromFailedReturnsToInactiveAndClearsDropFlagForNextAttempt() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    _ = chooseAndArmCandidate(state, connection)
+    // Force a drop so droppedDuringAttempt is genuinely true going into the failure.
+    connection.onState?(.disconnected)
+    guard case .connecting = state.pairing else {
+        Issue.record("expected .connecting after the mid-confirmation drop")
+        return
+    }
+    clock.now += AppState.connectTimeout + 1
+    state.checkConnectDeadline()
+    guard case .failed = state.pairing else {
+        Issue.record("expected .failed after the connect deadline passed")
+        return
+    }
+
+    state.cancelPairing()
+    #expect(state.pairing == .inactive)
+
+    // A fresh attempt must not inherit the previous attempt's drop flag.
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-B", rssi: -50)])
+    state.choosePairingCandidate(id)
+    connection.onState?(.armed)
+
+    guard case .confirming(_, _, let resetAfterDrop) = state.pairing else {
+        Issue.record("expected .confirming once the new candidate arms")
+        return
+    }
+    #expect(resetAfterDrop == false)
 }
