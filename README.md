@@ -86,6 +86,38 @@ Cała logika bez efektów ubocznych żyje w `TrikiMuteCore` i jest testowana bez
 sprzętu i bez przeglądarki. Warstwa CoreBluetooth i klikanie w DOM Meet
 wymagają testu ręcznego.
 
+## Wydania
+
+Push taga postaci `vX.Y.Z` (np. `v1.2.0`) uruchamia workflow GitHub Actions
+(`.github/workflows/release.yml`), który: odpala pełny zestaw testów i
+przerywa, jeśli którykolwiek nie przejdzie; buduje `.app` przez
+`scripts/build-app.sh`, wpisując numer wersji z taga w `Info.plist` zbudowanej
+paczki; pakuje paczkę narzędziem `ditto` (zwykły `zip` potrafi popsuć podpisaną
+paczkę `.app` — `ditto` zachowuje to, czego podpis wymaga); i publikuje wydanie
+GitHub z dołączonym plikiem `TrikiMute-X.Y.Z.zip`.
+
+Builder na runnerze GitHub nie ma dostępu do tożsamości podpisującej używanej
+lokalnie, więc CI podpisuje paczkę **ad-hoc** (`scripts/build-app.sh` przyjmuje
+tożsamość jako parametr właśnie z tego powodu — lokalnie domyślnie używana
+jest prawdziwa tożsamość, bez zmian w dotychczasowym sposobie budowania).
+
+**Konsekwencja dla osoby pobierającej wydanie**: aplikacja podpisana ad-hoc i
+ściągnięta z internetu trafia pod kwarantannę Gatekeepera. Podwójne kliknięcie
+zgłosi, że aplikacja jest uszkodzona albo pochodzi od niezweryfikowanego
+dewelopera — to nie jest uszkodzony plik, tylko spodziewany efekt braku
+prawdziwego podpisu. Żeby uruchomić:
+
+1. Kliknij ikonę aplikacji prawym przyciskiem (albo Control-klik) i wybierz
+   „Otwórz" — tylko za pierwszym razem. macOS zapyta o potwierdzenie, ale
+   tym razem pozwoli uruchomić.
+2. Alternatywnie, w terminalu: `xattr -dr com.apple.quarantine TrikiMute.app`,
+   a potem uruchom aplikację normalnie.
+
+Docelowe rozwiązanie to podpis Developer ID i notaryzacja — usuwają to tarcie
+całkowicie, a certyfikat do tego już istnieje lokalnie, więc ta ścieżka
+pozostaje otwarta, jeśli zajdzie taka potrzeba. Nie jest tu jeszcze
+zaimplementowane.
+
 ## Dokumentacja
 
 - [Specyfikacja](docs/superpowers/specs/2026-08-12-triki-mute-design.md)

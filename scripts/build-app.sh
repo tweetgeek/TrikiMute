@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# Składa podpisany pakiet .app z produktu SPM.
-# Podpis stałą tożsamością jest wymagany: macOS wiąże z nim zgody na Bluetooth
-# i Automation, a podpis ad-hoc unieważnia je przy każdej przebudowie.
+# Builds a signed .app bundle from the SPM product.
+#
+# Signing with a stable identity matters: macOS binds Bluetooth and Automation
+# consent to the code signature, and an ad-hoc signature invalidates that
+# consent on every rebuild. That is why the identity defaults to the real
+# local one below and local development never has to pass it explicitly.
+#
+# Ad-hoc signing (identity "-") exists only for CI, where no real identity is
+# available and no long-lived TCC grant needs to survive the build. It has a
+# real cost: an ad-hoc signed app downloaded from the internet is quarantined,
+# and macOS refuses to open it normally (see README for the workaround). Never
+# pass "-" for a build anyone is expected to keep running across relaunches.
 set -euo pipefail
 
 CONFIG="${1:-debug}"
-IDENTITY="Apple Development: Sebastian Dawidziak"
+IDENTITY="${2:-Apple Development: Sebastian Dawidziak}"
+VERSION="${3:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/TrikiMute.app"
 
@@ -18,6 +28,20 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TrikiMute"
 cp "$ROOT/Sources/TrikiMute/Info.plist" "$APP/Contents/Info.plist"
+
+if [[ -n "$VERSION" ]]; then
+    # Stamp the released version into the built bundle only — the tracked
+    # Info.plist keeps its placeholder so the source of truth for a release
+    # number is the git tag, not a file that has to be remembered and bumped
+    # by hand. CFBundleVersion is set to the same value as
+    # CFBundleShortVersionString rather than an independent build counter:
+    # every release is a fresh tag-triggered download, never an in-place
+    # update, so there is no meaningful "build number" distinct from the
+    # marketing version, and a second counter would just be one more thing
+    # that could drift from the tag.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+fi
 
 # The app icon is built from icon.png at the repo root rather than shipped
 # as a pre-made binary, so the bundle stays reproducible from the artwork.

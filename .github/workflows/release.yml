@@ -1,0 +1,83 @@
+name: Release
+
+# Triggered by pushing a tag of the form vX.Y.Z. Runs the test suite, builds
+# the .app ad-hoc signed and stamped with the tag's version, packages it with
+# ditto (plain zip mangles signed macOS bundles), and attaches it to a GitHub
+# release for the tag — all via tools already on the runner (swift, ditto,
+# gh), no third-party actions.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate tag and derive version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$TAG' is not of the form vX.Y.Z, refusing to release." >&2
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Select Xcode 16 or newer
+        # Package.swift declares swift-tools-version 6.0 with
+        # swiftLanguageMode(.v5), which needs the Swift 6 compiler that
+        # shipped starting with Xcode 16.0. Rather than pin one exact patch
+        # version — which stops existing the moment the runner image rotates
+        # — pick the newest Xcode 16+ actually installed on the runner and
+        # fail loudly if none qualifies.
+        run: |
+          shopt -s nullglob
+          candidates=(/Applications/Xcode_1[6-9]*.app /Applications/Xcode_2*.app)
+          shopt -u nullglob
+          if [ ${#candidates[@]} -eq 0 ]; then
+            echo "No Xcode 16+ found on this runner image; installed Xcode apps:" >&2
+            find /Applications -maxdepth 1 -iname "Xcode*" >&2
+            exit 1
+          fi
+          XCODE_APP=$(printf '%s\n' "${candidates[@]}" | sort -V | tail -1)
+          echo "Using $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          swift --version
+
+      - name: Run test suite
+        run: swift test
+
+      - name: Build .app (ad-hoc signed, version-stamped)
+        run: ./scripts/build-app.sh release - "$VERSION"
+
+      - name: Verify the built bundle is ad-hoc signed
+        run: |
+          codesign -dv build/TrikiMute.app 2>&1 | grep -q "Signature=adhoc"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" build/TrikiMute.app/Contents/Info.plist
+
+      - name: Package the bundle
+        # ditto preserves the extended attributes, resource forks and file
+        # ordering that codesign's signature depends on; a plain zip does not
+        # and can produce an archive whose extracted bundle fails
+        # verification. This is Apple's own documented tool for zipping
+        # signed .app bundles for distribution.
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent build/TrikiMute.app "dist/TrikiMute-${VERSION}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "dist/TrikiMute-${VERSION}.zip" \
+            --title "TrikiMute $VERSION" \
+            --generate-notes
