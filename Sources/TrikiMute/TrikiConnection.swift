@@ -189,9 +189,19 @@ final class TrikiConnection: NSObject {
         resumeSearch()
     }
 
-    /// Persists the identifier of the device currently connected — the one
-    /// `choose(_:)` picked — as the remembered device. The only place that
-    /// writes `knownDeviceKey`: `didDiscover` no longer does, and
+    /// Persists the identifier of `pairing.chosen` — the candidate
+    /// `choose(_:)` actually picked — as the remembered device. Deliberately
+    /// not `peripheral`: that tracks whatever the connection layer currently
+    /// has live, which during a `.connecting` reconnect race can momentarily
+    /// point somewhere other than the confirmed choice. `chosen` is set once,
+    /// by `choose(_:)`, and never reassigned — it's the only value that
+    /// actually answers "which device did the user pick," which is the
+    /// entire point of pairing (final review, Issue 2).
+    ///
+    /// Requires an active session with a chosen candidate; returns `false`
+    /// and persists nothing otherwise, so a caller can't accidentally
+    /// announce success for a device that was never confirmed. The only
+    /// place that writes `knownDeviceKey`: `didDiscover` no longer does, and
     /// `choose(_:)` only connects, so an unconfirmed candidate can never
     /// become "the" device.
     ///
@@ -201,11 +211,13 @@ final class TrikiConnection: NSObject {
     /// called out of sequence, this must still leave the scan invariant
     /// intact rather than end the session with scanning still running and
     /// no way left to stop it.
-    func confirmPairing() {
-        guard let peripheral else { return }
+    @discardableResult
+    func confirmPairing() -> Bool {
+        guard let session = pairing, let chosen = session.chosen else { return false }
         central.stopScan()
-        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.knownDeviceKey)
+        UserDefaults.standard.set(chosen.identifier.uuidString, forKey: Self.knownDeviceKey)
         pairing = nil
+        return true
     }
 
     /// Known device: a pending `connect()`. No saved device: does nothing —

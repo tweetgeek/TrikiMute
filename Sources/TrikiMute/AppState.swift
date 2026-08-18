@@ -523,8 +523,19 @@ final class AppState {
             confirmation = nil
             chosenRequired = nil
             droppedDuringAttempt = false
-            connection.confirmPairing()
-            pairing = .inactive
+            // confirmPairing() can refuse (no active session, or one with no
+            // chosen candidate) — a caller has to be able to tell that apart
+            // from success instead of announcing confirmation unconditionally
+            // for a device that was never actually saved (final review,
+            // Issue 2). In today's code the guard that reaches `.confirmed`
+            // at all already guarantees a chosen candidate exists, so this
+            // path isn't expected to be hit — but the whole point of the
+            // identity invariant is not depending on that staying true.
+            if connection.confirmPairing() {
+                pairing = .inactive
+            } else {
+                pairing = .failed("Nie udało się zapisać wybranego Kapsla — spróbuj ponownie.")
+            }
             updateProbing()
         case .timedOut:
             attemptTimer?.invalidate()

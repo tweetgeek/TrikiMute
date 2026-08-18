@@ -25,6 +25,9 @@ private final class FakeDeviceConnection: DeviceConnection {
     /// simulate Bluetooth not being ready (Issue 1, final review).
     var startPairingResult = true
     var hasSavedDevice = false
+    /// Controls what `confirmPairing()` reports back — flip to `false` to
+    /// simulate the identity guard refusing (Issue 2, final review).
+    var confirmPairingResult = true
 
     func start() { startCalled = true }
     func readRSSI() {}
@@ -36,7 +39,11 @@ private final class FakeDeviceConnection: DeviceConnection {
     }
     func choose(_ id: UUID) { chosenID = id }
     func cancelPairing() { cancelPairingCalled = true }
-    func confirmPairing() { confirmPairingCalled = true }
+    @discardableResult
+    func confirmPairing() -> Bool {
+        confirmPairingCalled = true
+        return confirmPairingResult
+    }
 }
 
 private struct RunnerError: Error {}
@@ -626,4 +633,33 @@ private func chooseAndArmCandidate(
 
     #expect(connection.startPairingCallCount == 1)
     #expect(state.pairing == .searching([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)]))
+}
+
+/// Issue 2: `confirmPairing()` must be able to refuse — persisting the wrong
+/// identity would defeat the whole point of pairing. A refusal has to reach
+/// the user instead of `AppState` announcing confirmation unconditionally.
+@Test @MainActor func confirmationRefusalSurfacesAsFailedInsteadOfSilentSuccess() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming(_, let required, _) = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+    connection.confirmPairingResult = false
+
+    for _ in 0..<required {
+        connection.onEvent?(.press)
+    }
+
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed instead of announcing a device that was never actually saved")
+        return
+    }
+    #expect(!message.isEmpty)
+    #expect(connection.confirmPairingCalled)
 }

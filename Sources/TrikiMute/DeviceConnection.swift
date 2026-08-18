@@ -54,11 +54,15 @@ protocol DeviceConnection: AnyObject {
     /// connected one, and resumes the suspended connection to the saved
     /// device, if there was one.
     func cancelPairing()
-    /// Persists the identifier of the device currently connected as the
-    /// remembered device. The only place that writes to `UserDefaults` —
-    /// called once the user's choice has been confirmed by a physical
-    /// button-press count (outside this type).
-    func confirmPairing()
+    /// Persists the identifier of the candidate `choose(_:)` picked — never
+    /// whatever happens to be connected — as the remembered device. The only
+    /// place that writes to `UserDefaults`, called once the user's choice has
+    /// been confirmed by a physical button-press count (outside this type).
+    /// Requires an active session with a chosen candidate; returns `false`
+    /// and persists nothing otherwise, so the caller can tell a refusal from
+    /// a success instead of announcing confirmation unconditionally.
+    @discardableResult
+    func confirmPairing() -> Bool
 }
 
 extension TrikiConnection: DeviceConnection {}
