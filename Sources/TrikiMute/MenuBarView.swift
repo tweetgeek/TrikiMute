@@ -53,14 +53,18 @@ struct MenuBarView: View {
             }
 
         case .searching(let candidates):
+            // The Kapsel sleeps and doesn't advertise until its button is
+            // pressed — the single most important fact about this hardware
+            // for anyone staring at an empty list (final review, Issue 4).
             if candidates.isEmpty {
-                Text("Szukam Kapsli…")
+                Text("Szukam Kapsli… naciśnij przycisk kapsla, żeby go obudzić.")
             } else {
                 ForEach(candidates) { candidate in
                     Button("\(candidate.name) (\(candidate.rssi) dBm)") {
                         state.choosePairingCandidate(candidate.id)
                     }
                 }
+                Text("Innego nie widać? Naciśnij jego przycisk, żeby go obudzić.")
             }
             Button("Anuluj parowanie") { state.cancelPairing() }
 

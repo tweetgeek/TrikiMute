@@ -85,6 +85,14 @@ final class AppState {
     /// two — so the number the user was told never changes mid-flow.
     /// `nil` outside an active `.connecting`/`.confirming` session.
     private var chosenRequired: Int?
+    /// Fires once, at `searchTimeout`, so an abandoned `.searching` session —
+    /// the menu dismissed without cancelling, nothing ever chosen — resolves
+    /// to `.failed` instead of leaving `TrikiConnection` scanning
+    /// indefinitely with the Meet probe suppressed the whole time (final
+    /// review, Issue 4). Retired by `choosePairingCandidate(_:)`, whose own
+    /// `connectTimer` takes over once something has actually been chosen.
+    /// Live only during `.searching`.
+    private var searchTimer: Timer?
     /// Fires once, at `connectTimeout`, so a candidate that never arms — the
     /// ghost-candidate case (it stopped advertising and `connect()` never
     /// calls back), or an ordinary drop mid-confirmation whose reconnect
@@ -132,6 +140,20 @@ final class AppState {
     /// Probe interval. The probe only runs while the device is Armed —
     /// outside of a call there's nothing to poll.
     private static let probeInterval: TimeInterval = 3.0
+
+    /// How long `.searching` scans before giving up if nothing is chosen.
+    /// The Kapsel doesn't advertise until its button is pressed, so this has
+    /// to be generous enough for someone to notice the empty list, walk
+    /// over, and press it — but scanning isn't free (final review, Issue 4):
+    /// left unbounded, dismissing the menu without cancelling kept
+    /// `TrikiConnection` scanning indefinitely, with the Meet probe
+    /// suppressed the entire time. 2 minutes is well past what a deliberate
+    /// pairing attempt needs, while still resolving an abandoned menu in
+    /// bounded time. Not `private`: `AppStateTests` crosses it deliberately.
+    static let searchTimeout: TimeInterval = 120.0
+
+    /// Not `private`, for the same reason as the other failure messages.
+    static let searchFailureMessage = "Nie znaleziono żadnego Kapsla w wyznaczonym czasie."
 
     /// How long a chosen candidate has to reach Armed before pairing gives
     /// up on it — covers both the initial connect and any reconnect after a
@@ -284,7 +306,15 @@ final class AppState {
     }
 
     /// SF Symbol name for the menu bar icon.
+    ///
+    /// Pairing gets its own symbol, checked before `deviceState` — `updateProbing()`
+    /// suppresses the probe for the entire pairing session, including while
+    /// merely browsing candidates with a previously saved device still
+    /// connected and Armed in the background. Without this, the icon kept
+    /// showing `mic.fill`/`mic.slash.fill` — asserting live mic state the app
+    /// had no way to actually know during pairing (final review, Issue 4).
     var iconName: String {
+        guard pairing == .inactive else { return "antenna.radiowaves.left.and.right" }
         switch deviceState {
         case .error: return "exclamationmark.triangle"
         case .disconnected, .searching: return "circle.dotted"
@@ -392,6 +422,7 @@ final class AppState {
             return
         }
         pairing = .searching([])
+        startSearchTimer()
         updateProbing()
     }
 
@@ -439,6 +470,8 @@ final class AppState {
     func choosePairingCandidate(_ id: UUID) {
         guard case .searching(let candidates) = pairing,
               let candidate = candidates.first(where: { $0.id == id }) else { return }
+        searchTimer?.invalidate()
+        searchTimer = nil
         connection.choose(id)
         chosenRequired = PairingConfirmation.randomRequirement()
         confirmation = nil
@@ -453,6 +486,8 @@ final class AppState {
     /// before `startPairing()` — a no-op if nothing is in progress.
     func cancelPairing() {
         guard pairing != .inactive else { return }
+        searchTimer?.invalidate()
+        searchTimer = nil
         attemptTimer?.invalidate()
         attemptTimer = nil
         connectTimer?.invalidate()
@@ -465,6 +500,16 @@ final class AppState {
         connection.cancelPairing()
         pairing = .inactive
         updateProbing()
+    }
+
+    /// Starts the bound on `.searching` finding nothing and nobody choosing
+    /// anything. Retired by `choosePairingCandidate(_:)`, whose own
+    /// `connectTimer` takes over from there.
+    private func startSearchTimer() {
+        searchTimer?.invalidate()
+        searchTimer = Timer.scheduledTimer(withTimeInterval: Self.searchTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkSearchDeadline() }
+        }
     }
 
     /// Starts the overall bound on one pairing attempt, once, from
@@ -664,6 +709,33 @@ final class AppState {
                 if probePending { refreshTarget() }
             }
         )
+    }
+
+    /// Evaluates whether the search deadline has passed, without waiting on
+    /// the real `searchTimer`. A no-op outside `.searching` — choosing a
+    /// candidate already invalidates `searchTimer` (see
+    /// `choosePairingCandidate(_:)`), so a deadline superseded by a choice
+    /// can't retroactively fail it.
+    ///
+    /// Bounds an otherwise-unbounded scan (final review, Issue 4): dismissing
+    /// the menu mid-search without cancelling used to leave `TrikiConnection`
+    /// scanning indefinitely, with the Meet probe suppressed the whole time.
+    ///
+    /// Package visibility (not `private`), same reasoning as `refreshTarget()`:
+    /// tests force this deterministically instead of scheduling and waiting
+    /// on a real `Timer`.
+    func checkSearchDeadline() {
+        guard case .searching = pairing else { return }
+        searchTimer?.invalidate()
+        searchTimer = nil
+        // `pairing` assigned before calling into `connection`: nothing has
+        // been chosen yet in `.searching`, so `TrikiConnection.cancelPairing()`
+        // doesn't call back synchronously here, but keeping the order
+        // consistent with the other teardown paths costs nothing and avoids
+        // relying on that staying true.
+        pairing = .failed(Self.searchFailureMessage)
+        connection.cancelPairing()
+        updateProbing()
     }
 
     /// Evaluates whether the connect deadline has passed, without waiting on

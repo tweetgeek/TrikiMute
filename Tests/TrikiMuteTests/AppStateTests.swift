@@ -663,3 +663,46 @@ private func chooseAndArmCandidate(
     #expect(!message.isEmpty)
     #expect(connection.confirmPairingCalled)
 }
+
+/// Issue 4: dismissing the menu without cancelling used to leave
+/// `TrikiConnection` scanning indefinitely, with the Meet probe suppressed
+/// the whole time. `.searching` is now bounded the same way `.connecting`
+/// and `.confirming` already were.
+@Test @MainActor func searchTimeoutFailsAndStopsScanning() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    #expect(state.pairing == .searching([]))
+
+    clock.now += AppState.searchTimeout + 1
+    state.checkSearchDeadline()
+
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed once the search deadline passed")
+        return
+    }
+    #expect(message == AppState.searchFailureMessage)
+    #expect(connection.cancelPairingCalled)
+}
+
+/// Issue 4, second half: the mic-state icon must not claim live information
+/// during pairing — the probe is suppressed for the whole session (see
+/// `updateProbing()`), so `target` can be stale or `nil` even while a saved
+/// device stays connected and Armed in the background.
+@Test @MainActor func iconIsDistinctWhilePairingEvenIfASavedDeviceStaysArmed() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    connection.onState?(.armed)
+    #expect(state.iconName == "mic.fill")
+
+    state.startPairing()
+    #expect(state.iconName != "mic.fill")
+    #expect(state.iconName != "mic.slash.fill")
+}
