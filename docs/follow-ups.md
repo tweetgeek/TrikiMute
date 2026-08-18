@@ -72,15 +72,22 @@ w rozmowie" nie jest oczywiste, stąd decyzja o udokumentowaniu zamiast naprawy.
 
 **Zapisany identyfikator, który się rozwiązuje, ale jest nieosiągalny.** Kapsel
 po resecie fabrycznym albo sparowany z innym komputerem daje wieczne „szukam"
-bez samoczynnego powrotu do skanowania. Wyjściem jest „Zmień Kapsla" w menu —
-uruchamia nowe parowanie niezależnie od stanu bieżącego (zawieszonego)
-połączenia, a wybór i potwierdzenie nowego urządzenia nadpisuje zapisany
-identyfikator. Osobna pozycja „Zapomnij Kapsel" nie istnieje w menu od wczesnej
-wersji parowania z wyboru — wybranie i potwierdzenie nowego urządzenia jest jej
-nadzbiorem. Końcowa recenzja zastała jednak `forget()` wciąż w protokole
-`DeviceConnection`, wywoływane tylko przez testową atrapę — martwy kod
-udający istniejącą ścieżkę odzysku. Usunięty; ten wpis poprawiony, żeby nazywać
-rzeczywistą ścieżkę.
+bez samoczynnego powrotu do skanowania. Menu daje dwie drogi wyjścia, dla dwóch
+różnych potrzeb: „Zmień Kapsla" uruchamia nowe parowanie niezależnie od stanu
+bieżącego (zawieszonego) połączenia, a wybór i potwierdzenie nowego urządzenia
+nadpisuje zapisany identyfikator — dla sytuacji, gdy jest czym zastąpić. „Zapomnij
+Kapsel" (widoczne w menu tylko gdy `hasSavedDevice` jest prawdziwe) po prostu
+czyści zapisany identyfikator i wraca do bezczynności, bez szukania zastępstwa —
+dla sytuacji, gdy zastępstwa jeszcze nie ma (zgubiony albo oddany kapsel).
+Wcześniejsza wersja tego wpisu twierdziła, że „Zapomnij Kapsel" nie istnieje
+i że „Zmień Kapsla" jest jej nadzbiorem — to nigdy nie było prawdą co do
+możliwości: zmiana zastępuje, nie usuwa. Wersja `DeviceConnection.forget()`
+została skasowana jako rzekomo martwy kod (wywoływana tylko przez testową
+atrapę), a ten wpis przy tej samej okazji błędnie przestawiony na nazywanie
+„Zmień Kapsla" jedyną ścieżką odzysku. Obie pomyłki naprawione: `forget()`
+przywrócone wraz z jego usztywnieniem (zatrzymuje trwające skanowanie
+parowania i czyści sesję przed zerwaniem połączenia), a pozycja menu — obok
+przycisku parowania.
 
 **Kliknięcie przy stanie „wymaga zatwierdzenia".** Wywołuje ponowną rejestrację
 zamiast otworzyć Ustawienia systemowe na panelu elementów logowania.

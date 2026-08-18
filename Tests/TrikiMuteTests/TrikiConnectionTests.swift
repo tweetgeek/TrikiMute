@@ -202,3 +202,77 @@ private func withSavedDeviceIdentifier(_ uuid: UUID?, _ body: () -> Void) {
         #expect(central.connectCallCount == 0)
     }
 }
+
+// MARK: - forget(): restores the saved-but-unreachable capsule's recovery route
+
+/// The plain case: a saved identifier, no session live. `forget()` must
+/// clear it — `hasSavedDevice` is the property the menu (and this test)
+/// reads to decide whether "Zapomnij Kapsel" is even shown.
+@Test @MainActor func forgetClearsTheSavedIdentifier() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+        #expect(connection.hasSavedDevice)
+
+        connection.forget()
+
+        #expect(!connection.hasSavedDevice)
+    }
+}
+
+/// The hardened half (recovered from before `forget()` was deleted as dead
+/// code): a pairing session in progress must not survive `forget()` — the
+/// scan invariant belongs to `TrikiConnection` regardless of what phase
+/// pairing was in, not merely because a well-behaved caller is expected to
+/// stop pairing first. Stopping the scan here is what a caller could
+/// otherwise skip and leave running with nothing left able to stop it.
+@Test @MainActor func forgetStopsAnyInProgressPairingScan() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+        #expect(connection.startPairing() == true)
+        #expect(central.scanForPeripheralsCallCount == 1)
+
+        connection.forget()
+
+        #expect(central.stopScanCallCount == 1)
+        // The session is gone, not just the scan — startPairing() must be
+        // able to start a fresh one immediately, not be refused as
+        // reentrant against a session forget() should have already ended.
+        #expect(connection.startPairing() == true)
+        #expect(central.scanForPeripheralsCallCount == 2)
+    }
+}
+
+/// The behavioral decision at the center of restoring this method: after
+/// forgetting, the app must sit idle rather than immediately go hunting for
+/// the very device it was just told to forget. `forget()` clears the saved
+/// identifier before calling `resumeSearch()`, so `resumeSearch()` finds
+/// nothing saved and does nothing — no retrieval, no pending connect.
+@Test @MainActor func forgetLeavesTheAppIdleInsteadOfResumingSearchForTheForgottenDevice() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+
+        connection.forget()
+
+        #expect(central.retrievePeripheralsCallCount == 0)
+        #expect(central.connectCallCount == 0)
+    }
+}
+
+/// Forgetting with nothing saved and no session live must not misbehave —
+/// no scan to stop, no identifier to clear beyond a no-op removal, no
+/// resumeSearch side effect.
+@Test @MainActor func forgetWithNothingSavedAndNoSessionIsHarmless() {
+    withSavedDeviceIdentifier(nil) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+
+        connection.forget()
+
+        #expect(!connection.hasSavedDevice)
+        #expect(central.stopScanCallCount == 0)
+        #expect(central.retrievePeripheralsCallCount == 0)
+    }
+}

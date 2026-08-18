@@ -384,13 +384,13 @@ final class AppState {
     }
 
     /// Enters or restarts discovery: clears the candidate list and starts
-    /// scanning. This is the menu's single pairing entry point — with no
-    /// saved device it's the first step; with one already saved it's how the
-    /// user replaces it (the menu no longer offers a separate "forget"
-    /// action, since choosing and confirming a new device is a strict
-    /// superset of it). The previously saved device, if any, keeps working
-    /// undisturbed until a new one is actually confirmed — see
-    /// `choosePairingCandidate(_:)` and `TrikiConnection.startPairing()`.
+    /// scanning. This is the menu's entry point for *replacing* the saved
+    /// device — with none saved it's the first pairing, with one already
+    /// saved it's "Zmień Kapsla". `forgetDevice()` is the complementary
+    /// entry point for *removing* it with nothing to replace it with. The
+    /// previously saved device, if any, keeps working undisturbed until a
+    /// new one is actually confirmed — see `choosePairingCandidate(_:)` and
+    /// `TrikiConnection.startPairing()`.
     ///
     /// Guards against two cases: a session already `.searching`,
     /// `.connecting`, or `.confirming` is left alone rather than silently
@@ -511,6 +511,47 @@ final class AppState {
         droppedDuringAttempt = false
         pairing = .inactive
         connection.cancelPairing()
+        updateProbing()
+    }
+
+    /// Clears the saved device and returns the app to idle — no pending
+    /// connection, no live session, nothing to hunt for. The complement to
+    /// `startPairing()`: that lets the saved device be *replaced*, this lets
+    /// it be *removed* with nothing to replace it with — the case
+    /// `startPairing()` doesn't cover, e.g. a lost or given-away capsule.
+    /// Menu-visible only when `hasSavedDevice` is true (see `MenuBarView`),
+    /// but not guarded here on `pairing` being `.inactive`: like
+    /// `cancelPairing()`, it has to be coherent no matter what phase it's
+    /// called from, not merely because the menu is expected to only offer it
+    /// at rest.
+    ///
+    /// Tears down any live pairing session first, using the same
+    /// timer/bookkeeping reset as `cancelPairing()` — `connection.forget()`
+    /// independently defends its own scan invariant regardless of caller
+    /// (see its doc comment), but it knows nothing about `AppState`'s own
+    /// timers or `chosenRequired`/`confirmation`, so those still need
+    /// clearing here. `pairing` is assigned to `.inactive` *before* calling
+    /// into `connection`, same reasoning as `cancelPairing()` (final review,
+    /// Issue 5): `TrikiConnection.forget()` always emits
+    /// `onState(.disconnected)` synchronously, and by the time that reentrant
+    /// callback checks `pairing` it must already read `.inactive` — otherwise
+    /// the `onState` handler's `.confirming` branch would treat it as an
+    /// ordinary mid-confirmation drop and schedule a fresh `connectTimer`
+    /// underneath a teardown that was supposed to leave none running.
+    func forgetDevice() {
+        searchTimer?.invalidate()
+        searchTimer = nil
+        attemptTimer?.invalidate()
+        attemptTimer = nil
+        connectTimer?.invalidate()
+        connectTimer = nil
+        pressTimer?.invalidate()
+        pressTimer = nil
+        confirmation = nil
+        chosenRequired = nil
+        droppedDuringAttempt = false
+        pairing = .inactive
+        connection.forget()
         updateProbing()
     }
 

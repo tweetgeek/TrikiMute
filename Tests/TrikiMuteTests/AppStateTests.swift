@@ -17,6 +17,7 @@ private final class FakeDeviceConnection: DeviceConnection {
     private(set) var startPairingCallCount = 0
     private(set) var cancelPairingCalled = false
     private(set) var confirmPairingCalled = false
+    private(set) var forgetCalled = false
     private(set) var chosenID: UUID?
 
     var startPairingCalled: Bool { startPairingCallCount > 0 }
@@ -37,6 +38,16 @@ private final class FakeDeviceConnection: DeviceConnection {
 
     func start() { startCalled = true }
     func readRSSI() {}
+    /// Mirrors the real `TrikiConnection.forget()`: always clears the saved
+    /// device and always emits `onState(.disconnected)` synchronously,
+    /// unconditionally — not gated behind a flag like
+    /// `cancelPairingEmitsDisconnected`, because the real method never gates
+    /// it either.
+    func forget() {
+        forgetCalled = true
+        hasSavedDevice = false
+        onState?(.disconnected)
+    }
     @discardableResult
     func startPairing() -> Bool {
         startPairingCallCount += 1
@@ -810,4 +821,61 @@ private func chooseAndArmCandidate(
         return
     }
     #expect(resetAfterDrop == false)
+}
+
+// MARK: - forgetDevice()
+
+/// The plain case: nothing else in progress, just a saved device being
+/// cleared. Pins the menu-visibility contract too — `hasSavedDevice` must
+/// flip to `false` so the "Zapomnij Kapsel"/"Zmień Kapsla" wording in
+/// `MenuBarView` reacts correctly, and `pairing` must land on `.inactive` so
+/// the next thing the menu shows is the plain "Paruj Kapsla" button — the
+/// only sensible next step once there's nothing saved.
+@Test @MainActor func forgetDeviceClearsSavedDeviceAndLeavesAppIdle() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    state.forgetDevice()
+
+    #expect(connection.forgetCalled)
+    #expect(!state.hasSavedDevice)
+    #expect(state.pairing == .inactive)
+    #expect(state.deviceState == .disconnected)
+}
+
+/// Forgetting mid-pairing must win over whatever the session was doing —
+/// the destructive, deliberate action tears down the live attempt rather
+/// than being blocked by it or leaving it half-alive underneath. Reuses the
+/// same evidence `cancelDuringConfirmingLeavesNoLiveTimerBehind` relies on:
+/// `TrikiConnection.forget()` always emits `onState(.disconnected)`
+/// synchronously (see `FakeDeviceConnection.forget()`), so if `pairing`
+/// weren't assigned `.inactive` before calling into `connection` (the same
+/// Issue 5 ordering `cancelPairing()` depends on), the reentrant callback
+/// would misread the still-`.confirming` phase as an ordinary
+/// mid-confirmation drop and leak a fresh `connectTimer` underneath this
+/// teardown.
+@Test @MainActor func forgetDeviceDuringLivePairingTearsDownSessionCoherently() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    _ = chooseAndArmCandidate(state, connection)
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming once the candidate is armed")
+        return
+    }
+
+    state.forgetDevice()
+
+    #expect(state.pairing == .inactive)
+    #expect(state.hasNoLivePairingTimers)
+    #expect(connection.forgetCalled)
+    #expect(!connection.confirmPairingCalled)
+    #expect(!state.hasSavedDevice)
 }

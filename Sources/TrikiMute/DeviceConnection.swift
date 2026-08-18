@@ -32,6 +32,14 @@ protocol DeviceConnection: AnyObject {
 
     func start()
     func readRSSI()
+    /// Clears the saved device identifier and returns to idle: no pending
+    /// `connect()`, no live pairing session. The complement to
+    /// `startPairing()`/`confirmPairing()` — those let the saved device be
+    /// *replaced*, this lets it be *removed* with nothing to replace it
+    /// with (lost or given-away capsule). Ends any pairing session in
+    /// progress first, regardless of what phase it's in — the caller isn't
+    /// trusted to only invoke this while idle.
+    func forget()
 
     /// Enters discovery mode: scans and reports candidates via
     /// `onCandidates` instead of connecting to anything automatically. Does

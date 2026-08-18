@@ -35,10 +35,14 @@ struct MenuBarView: View {
     }
 
     /// Pairing lives entirely in one place in the menu — this switches on
-    /// `AppState.pairing` and renders whichever step is current. It replaces
-    /// the old standalone "Zapomnij Kapsel" button: starting pairing is now
-    /// also how you change device, and it leaves the previous one connected
-    /// and working until a new one is actually confirmed.
+    /// `AppState.pairing` and renders whichever step is current. "Zapomnij
+    /// Kapsel" sits next to the pairing button, in the same `.inactive` case:
+    /// pairing *replaces* the saved device, forgetting *removes* it with
+    /// nothing to replace it with (lost or given-away capsule) — two
+    /// different needs, so two buttons. Pairing comes first and forgetting
+    /// second, matching how often each is actually used: pairing is the
+    /// common action (first setup, or swapping to a different capsule),
+    /// forgetting is destructive and rare.
     @ViewBuilder
     private var pairingSection: some View {
         switch state.pairing {
@@ -50,6 +54,17 @@ struct MenuBarView: View {
             // saved, which used to show "Paruj Kapsla" in that case.
             Button(state.hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla") {
                 state.startPairing()
+            }
+            // Only meaningful — and only shown — when there's actually
+            // something saved to clear. No confirmation dialog: the action
+            // is fully reversible (pair again) and already sits behind a
+            // deliberate menu-bar navigation, the same lack of ceremony this
+            // menu already gives "Anuluj parowanie" for a comparably
+            // consequential action.
+            if state.hasSavedDevice {
+                Button("Zapomnij Kapsel") {
+                    state.forgetDevice()
+                }
             }
 
         case .searching(let candidates):

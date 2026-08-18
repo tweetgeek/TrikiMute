@@ -110,6 +110,38 @@ final class TrikiConnection: NSObject {
         peripheral?.readRSSI()
     }
 
+    /// Forgets the device and goes back to waiting. Use when there's nothing
+    /// to replace it with — a lost or given-away capsule — as opposed to
+    /// `startPairing()`, which replaces the saved device with another one.
+    /// The app won't reconnect until `startPairing()` is called again:
+    /// `resumeSearch()` at the end of this method is not a contradiction —
+    /// by the time it runs, `knownDeviceKey` has already been cleared above,
+    /// so it finds nothing saved and does nothing. That's deliberate, not
+    /// incidental: forgetting must leave the app idle rather than
+    /// immediately hunting for the very device it was just told to forget,
+    /// and calling `resumeSearch()` here (instead of duplicating its "leave
+    /// `.disconnected`" ending) is what makes that fall out for free.
+    ///
+    /// Also ends any pairing session in progress: `central` — and therefore
+    /// the scan invariant (never left running with nothing able to stop it)
+    /// — belongs solely to this type, so it has to hold regardless of what
+    /// a caller does, not merely because the menu is expected to prevent
+    /// calling this mid-pairing. Stopping the scan and clearing `pairing`
+    /// before tearing down the connection also means `resumeSearch()`'s own
+    /// `guard pairing == nil` never blocks the (already-inert) call at the
+    /// end of this method.
+    func forget() {
+        UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
+        if pairing != nil {
+            central.stopScan()
+            pairing = nil
+        }
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        peripheral = nil
+        onState?(.disconnected)
+        resumeSearch()
+    }
+
     /// Enters discovery mode: clears any previous candidate list and starts
     /// scanning. Leaves the saved identifier and the current `peripheral`
     /// (if any) untouched — a saved device already connecting or connected
@@ -124,7 +156,7 @@ final class TrikiConnection: NSObject {
     /// drop `chosen`, which `cancelPairing()` reads to decide whether to
     /// disconnect a connected candidate and restore the saved device; with
     /// `chosen` gone, it would take the wrong branch. Same reasoning Task
-    /// 2's review applied to `confirmPairing()`.
+    /// 2's review applied to `confirmPairing()` and `forget()`.
     ///
     /// Returns `false` without doing anything if Bluetooth isn't powered on
     /// or a session is already live — a silent no-op here previously left
@@ -328,12 +360,16 @@ extension TrikiConnection: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
-            // Deliberate disconnect: `choose(_:)` or `cancelPairing()` already
-            // reassigned/cleared `peripheral` before this callback arrived —
-            // e.g. `choose(_:)` disconnecting a previously connected saved
-            // device in favor of the newly chosen candidate. Without this
-            // guard, a stale disconnect for that no-longer-current peripheral
-            // would immediately reconnect it.
+            // Deliberate disconnect: `choose(_:)`, `cancelPairing()`, or
+            // `forget()` already reassigned/cleared `peripheral` before this
+            // callback arrived — e.g. `choose(_:)` disconnecting a previously
+            // connected saved device in favor of the newly chosen candidate,
+            // or `forget()` clearing `peripheral` before its own
+            // `cancelPeripheralConnection` call resolves. Without this guard,
+            // a stale disconnect for that no-longer-current peripheral would
+            // immediately reconnect it — for `forget()` specifically, that
+            // would resurrect a connection (and a "searching" state) for the
+            // very device the user just asked the app to forget.
             guard peripheral.identifier == self.peripheral?.identifier else { return }
             rx = nil
             onState?(.disconnected)
