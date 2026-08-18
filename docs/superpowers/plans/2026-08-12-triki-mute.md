@@ -1810,6 +1810,10 @@ final class AppState {
     /// Stąd zaległość: w kolejce czeka najwyżej jedna sonda i rusza od razu
     /// po bieżącej.
     private func odswiezCel() {
+        // Sonda ma sens wyłącznie przy uzbrojonym Kapslu. Bez tej bramki
+        // odświeżenie opóźnione po Akcji mogłoby wystartować już po
+        // rozłączeniu i wpisać Cel dla urządzenia, którego nie ma.
+        guard stanKapsla == .uzbrojony else { return }
         guard !sondaWToku else {
             sondaZalegla = true
             return
@@ -1936,11 +1940,18 @@ Trzy rozróżnialne sygnały. Jedyny kanał, który działa, gdy nie patrzysz na
 
 **Files:**
 - Create: `Sources/TrikiMute/Feedback.swift`
-- Modify: `Sources/TrikiMute/AppState.swift`
+- Modify: `Sources/TrikiMute/AppState.swift` (dźwięk w `wykonaj` oraz bramka stanu w `odswiezCel`)
 
 **Interfaces:**
 - Consumes: `ActionOutcome` z Task 6.
 - Produces: `enum Feedback { static func zagraj(_ wynik: ActionOutcome) }`.
+
+To zadanie domyka też ostatni wyścig z rodziny zamkniętej w Task 9. Odświeżenie
+opóźnione o 0,3 s po Akcji nie jest anulowane przy rozłączeniu, więc gdy
+rozłączenie wypadnie w tym okienku, startuje **nowa, poprawna generacyjnie**
+sonda — licznik pokoleń jej nie zatrzyma, bo nie jest przedawniona, tylko
+niepotrzebna. Jej wynik wpisałby Cel dla urządzenia, którego już nie ma, i menu
+pokazałoby opis rozmowy pod nagłówkiem „Kapsel rozłączony".
 
 - [ ] **Step 1: Napisz sygnały**
 
@@ -2000,7 +2011,22 @@ W `Sources/TrikiMute/AppState.swift` zastąp metodę `wykonaj`:
     }
 ```
 
-- [ ] **Step 3: Zbuduj i przetestuj wszystkie trzy sygnały**
+- [ ] **Step 3: Zabezpiecz sondę bramką stanu**
+
+W `Sources/TrikiMute/AppState.swift`, w metodzie `odswiezCel()`, dopisz bramkę
+jako **pierwszą** instrukcję metody, przed sprawdzeniem `sondaWToku`:
+
+```swift
+        // Sonda ma sens wyłącznie przy uzbrojonym Kapslu. Bez tej bramki
+        // odświeżenie opóźnione po Akcji mogłoby wystartować już po
+        // rozłączeniu i wpisać Cel dla urządzenia, którego nie ma.
+        guard stanKapsla == .uzbrojony else { return }
+```
+
+Kolejność ma znaczenie: bramka musi być przed `guard !sondaWToku`, żeby
+odświeżenie zgłoszone po rozłączeniu nie ustawiło nawet flagi zaległości.
+
+- [ ] **Step 4: Zbuduj i przetestuj wszystkie trzy sygnały**
 
 ```bash
 ./scripts/build-app.sh && open build/TrikiMute.app
@@ -2012,7 +2038,7 @@ Wywołaj po kolei trzy sytuacje i potwierdź, że każda brzmi inaczej:
 2. **Brak Celu** — zamknij kartę Meet, poczekaj, aż menu pokaże „Brak Celu", naciśnij przycisk. Oczekiwane: `Pop`.
 3. **Błąd** — odbierz zgodę na Automation w Ustawieniach systemowych i naciśnij przycisk przy otwartej rozmowie. Oczekiwane: `Basso`. Przywróć zgodę.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Sources/TrikiMute
