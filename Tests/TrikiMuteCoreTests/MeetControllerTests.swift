@@ -90,6 +90,86 @@ private final class StubBackend: MeetBackend {
     #expect(backend.perform(.microphone, instances: twoInstances) == .performed)
 }
 
+@Test func appleScriptBackendProbeStopsAtFirstBrowserWithTarget() {
+    // Early exit: the second browser must never be asked once the first
+    // already answered — that would be a needless Apple Event.
+    let runner = FakeRunner(["01", "11"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [
+        BrowserInstance(pid: 1445, browser: brave, isActive: false),
+        BrowserInstance(pid: 1450, browser: chrome, isActive: false),
+    ]
+    let result = backend.probe(instances: instances)
+    #expect(result == .target(ProbeResult(browser: "Brave Browser", micMuted: false, cameraOff: true)))
+    #expect(runner.executed.count == 1)
+}
+
+@Test func appleScriptBackendProbeFindsTargetDespiteFirstBrowserError() {
+    let runner = FakeRunner(["THROW", "10"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [
+        BrowserInstance(pid: 1445, browser: brave, isActive: false),
+        BrowserInstance(pid: 1450, browser: chrome, isActive: false),
+    ]
+    let result = backend.probe(instances: instances)
+    #expect(result == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false)))
+}
+
+@Test func appleScriptBackendProbeReportsErrorWhenOneBrowserThrowsAndOtherHasNoTarget() {
+    // The case where an error could be silently overwritten by a later
+    // no-target answer: a real failure must win, not read as "no call".
+    let runner = FakeRunner(["THROW", "NONE"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [
+        BrowserInstance(pid: 1445, browser: brave, isActive: false),
+        BrowserInstance(pid: 1450, browser: chrome, isActive: false),
+    ]
+    if case .failed = backend.probe(instances: instances) {
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
+}
+
+@Test func appleScriptBackendActionReportsNoTarget() {
+    let runner = FakeRunner(["NONE"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [BrowserInstance(pid: 1450, browser: chrome, isActive: false)]
+    #expect(backend.perform(.microphone, instances: instances) == .noTarget)
+}
+
+@Test func appleScriptBackendActionReportsRunnerError() {
+    let runner = FakeRunner(["THROW"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [BrowserInstance(pid: 1450, browser: chrome, isActive: false)]
+    if case .failed = backend.perform(.camera, instances: instances) {
+    } else {
+        Issue.record("Oczekiwano .failed")
+    }
+}
+
+@Test func appleScriptBackendActionSucceedsWhenFirstBrowserThrowsAndSecondWorks() {
+    let runner = FakeRunner(["THROW", "OK"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [
+        BrowserInstance(pid: 1445, browser: brave, isActive: false),
+        BrowserInstance(pid: 1450, browser: chrome, isActive: false),
+    ]
+    #expect(backend.perform(.microphone, instances: instances) == .performed)
+}
+
+@Test func appleScriptBackendActionReportsErrorWhenOneBrowserThrowsAndOtherHasNoTarget() {
+    let runner = FakeRunner(["THROW", "NONE"])
+    let backend = AppleScriptMeetBackend(runner: runner)
+    let instances = [
+        BrowserInstance(pid: 1445, browser: brave, isActive: false),
+        BrowserInstance(pid: 1450, browser: chrome, isActive: false),
+    ]
+    if case .failed = backend.perform(.microphone, instances: instances) {
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
+}
+
 // MARK: - MeetController as a facade
 
 @Test func controllerUsesFallbackOnlyWhenPrimaryFails() {
