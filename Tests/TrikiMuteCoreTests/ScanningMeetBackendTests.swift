@@ -7,6 +7,13 @@ private let brave = SupportedBrowser(bundleID: "com.brave.Browser", name: "Brave
 
 private struct AccessError: Error {}
 
+/// A `LocalizedError` with a distinctive message, used to prove the backend
+/// surfaces `error.localizedDescription` rather than `String(describing:)`,
+/// which would print the struct instead of the authored sentence.
+private struct LocalizedAccessError: LocalizedError {
+    var errorDescription: String? { "Brak zgody na sterowanie Google Chrome — włącz ją w Ustawieniach" }
+}
+
 /// Fake tab: answers with a programmed response, or throws.
 /// `nil` response means "this tab throws when executed".
 private final class FakeTab: BrowserTab {
@@ -32,16 +39,18 @@ private final class FakeTab: BrowserTab {
 private final class FakeAccess: BrowserAccess {
     private let tabsByPid: [pid_t: [FakeTab]]
     private let brokenPids: Set<pid_t>
+    private let error: any Error
     private(set) var queriedPids: [pid_t] = []
 
-    init(tabsByPid: [pid_t: [FakeTab]], brokenPids: Set<pid_t> = []) {
+    init(tabsByPid: [pid_t: [FakeTab]], brokenPids: Set<pid_t> = [], error: any Error = AccessError()) {
         self.tabsByPid = tabsByPid
         self.brokenPids = brokenPids
+        self.error = error
     }
 
     func tabs(in instance: BrowserInstance) throws -> [any BrowserTab] {
         queriedPids.append(instance.pid)
-        if brokenPids.contains(instance.pid) { throw AccessError() }
+        if brokenPids.contains(instance.pid) { throw error }
         return tabsByPid[instance.pid] ?? []
     }
 }
@@ -88,6 +97,31 @@ private final class FakeAccess: BrowserAccess {
     let backend = ScanningMeetBackend(access: access)
     let outcome = backend.probe(instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
     if case .failed = outcome {} else { Issue.record("Oczekiwano .failed") }
+}
+
+@Test func probeFailureMessageIsTheErrorsLocalizedDescriptionNotItsDebugDump() {
+    // `String(describing: error)` prints the struct (e.g. `Failure(message:
+    // "...")`) instead of the authored sentence a `LocalizedError` provides.
+    // The message shown to the user must be the sentence itself, exactly.
+    let access = FakeAccess(tabsByPid: [:], brokenPids: [1450], error: LocalizedAccessError())
+    let backend = ScanningMeetBackend(access: access)
+    let outcome = backend.probe(instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
+    if case .failed(let message) = outcome {
+        #expect(message == "Brak zgody na sterowanie Google Chrome — włącz ją w Ustawieniach")
+    } else {
+        Issue.record("Oczekiwano .failed, otrzymano \(outcome)")
+    }
+}
+
+@Test func performFailureMessageIsTheErrorsLocalizedDescriptionNotItsDebugDump() {
+    let access = FakeAccess(tabsByPid: [:], brokenPids: [1450], error: LocalizedAccessError())
+    let backend = ScanningMeetBackend(access: access)
+    let outcome = backend.perform(.microphone, instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
+    if case .failed(let message) = outcome {
+        #expect(message == "Brak zgody na sterowanie Google Chrome — włącz ją w Ustawieniach")
+    } else {
+        Issue.record("Oczekiwano .failed, otrzymano \(outcome)")
+    }
 }
 
 @Test func probeReturnsTargetEvenIfAnEarlierInstanceFailed() {

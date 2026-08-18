@@ -29,7 +29,7 @@ public struct AppleScriptMeetBackend: MeetBackend {
                     cameraOff: chars[1] == "1"
                 ))
             } catch {
-                lastError = String(describing: error)
+                lastError = error.localizedDescription
             }
         }
         if let lastError { return .failed(lastError) }
@@ -45,7 +45,7 @@ public struct AppleScriptMeetBackend: MeetBackend {
                 )
                 if response == "OK" { return .performed }
             } catch {
-                lastError = String(describing: error)
+                lastError = error.localizedDescription
             }
         }
         if let lastError { return .failed(lastError) }

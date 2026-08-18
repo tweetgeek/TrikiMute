@@ -31,12 +31,12 @@ public struct ScanningMeetBackend: MeetBackend {
                             cameraOff: chars[1] == "1"
                         ))
                     } catch {
-                        lastError = String(describing: error)
+                        lastError = error.localizedDescription
                         continue
                     }
                 }
             } catch {
-                lastError = String(describing: error)
+                lastError = error.localizedDescription
             }
         }
         if let lastError { return .failed(lastError) }
@@ -51,12 +51,12 @@ public struct ScanningMeetBackend: MeetBackend {
                     do {
                         if try tab.execute(MeetScripts.toggleJS(action)) == "OK" { return .performed }
                     } catch {
-                        lastError = String(describing: error)
+                        lastError = error.localizedDescription
                         continue
                     }
                 }
             } catch {
-                lastError = String(describing: error)
+                lastError = error.localizedDescription
             }
         }
         if let lastError { return .failed(lastError) }
