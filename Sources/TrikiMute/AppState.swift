@@ -87,6 +87,7 @@ final class AppState {
             let wynik = controller.perform(action, browsers: przegladarki)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                Feedback.zagraj(wynik)
                 ostatniaAkcja = opis(action, wynik)
                 // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt
                 // musi poczekać, inaczej zobaczymy stan sprzed Akcji.
@@ -141,6 +142,10 @@ final class AppState {
     /// Stąd zaległość: w kolejce czeka najwyżej jedna sonda i rusza od razu
     /// po bieżącej.
     private func odswiezCel() {
+        // Sonda ma sens wyłącznie przy uzbrojonym Kapslu. Bez tej bramki
+        // odświeżenie opóźnione po Akcji mogłoby wystartować już po
+        // rozłączeniu i wpisać Cel dla urządzenia, którego nie ma.
+        guard stanKapsla == .uzbrojony else { return }
         guard !sondaWToku else {
             sondaZalegla = true
             return
