@@ -155,3 +155,27 @@ private final class FakeAccess: BrowserAccess {
     let outcome = backend.perform(.microphone, instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
     if case .failed = outcome {} else { Issue.record("Oczekiwano .failed") }
 }
+
+@Test func probeSkipsTabsThatThrowAndFindsTargetInNextTab() {
+    // A throw from the first tab must not abort the tab loop. If the first tab
+    // mid-navigation throws, the second tab that holds the actual call must
+    // still be checked and found.
+    let throwing = FakeTab(url: "https://meet.google.com/mid-navigation", response: nil)
+    let live = FakeTab(url: "https://meet.google.com/abc-defg-hij", response: "11")
+    let access = FakeAccess(tabsByPid: [1450: [throwing, live]])
+    let backend = ScanningMeetBackend(access: access)
+    let outcome = backend.probe(instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
+    #expect(outcome == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: true)))
+}
+
+@Test func performSkipsTabsThatThrowAndClicksInNextTab() {
+    // A throw from the first tab must not abort the tab loop. If the first tab
+    // mid-navigation throws, the second tab that holds the actual call must
+    // still be checked and clicked.
+    let throwing = FakeTab(url: "https://meet.google.com/mid-navigation", response: nil)
+    let live = FakeTab(url: "https://meet.google.com/abc-defg-hij", response: "OK")
+    let access = FakeAccess(tabsByPid: [1450: [throwing, live]])
+    let backend = ScanningMeetBackend(access: access)
+    let outcome = backend.perform(.microphone, instances: [BrowserInstance(pid: 1450, browser: chrome, isActive: false)])
+    #expect(outcome == .performed)
+}
