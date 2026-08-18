@@ -31,6 +31,24 @@ final class ScriptingBridgeBrowsers: NSObject, BrowserAccess {
     struct Failure: LocalizedError {
         let message: String
         var errorDescription: String? { message }
+
+        /// Maps an Apple Event error code to the message shown to the user.
+        ///
+        /// Pure mapping, extracted out of `ErrorTrap` so it can be tested
+        /// without a real browser process — it's the one piece of genuinely
+        /// testable logic in a file whose whole reason for existing is that
+        /// the rest cannot be. Named by hand: `-1743` is refused Automation
+        /// permission, `-600`/`-609` mean the process went away mid-question.
+        static func appleEvent(code: Int, browser: String) -> Failure {
+            switch code {
+            case -1743:
+                return .init(message: "Brak zgody na sterowanie \(browser) — włącz ją w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja")
+            case -600, -609:
+                return .init(message: "\(browser) przestał działać w trakcie sprawdzania")
+            default:
+                return .init(message: "\(browser): błąd Apple Events \(code)")
+            }
+        }
     }
 
     /// Apple Events time out after this many ticks of 1/60 s — 5 seconds, the
@@ -58,16 +76,38 @@ final class ScriptingBridgeBrowsers: NSObject, BrowserAccess {
         }
 
         var result: [any BrowserTab] = []
+        // Below the window level, a nil answer is treated more leniently than
+        // `windows()` above: a single window or tab that doesn't answer
+        // `tabs()`/`URL` (a DevTools panel, some other window ScriptingBridge
+        // can't fully describe) must not take down an Instance whose other
+        // windows answered normally, so it's skipped with `continue`, same as
+        // before this fix. But if *nothing* answers — every window and every
+        // tab comes back nil — an empty `result` would read as "no call in
+        // this browser", which is exactly the failure-masquerading-as-no-
+        // target defect this task exists to prevent. So the sweep is only
+        // trusted as genuinely empty once at least one window or tab has
+        // actually answered; otherwise it's a failure, judged after every
+        // window has had its chance.
+        var unanswered = false
         for window in windows {
             let scriptableWindow = unsafeBitCast(window as AnyObject, to: ScriptableWindow.self)
-            guard let tabs = scriptableWindow.tabs?() else { continue }
+            guard let tabs = scriptableWindow.tabs?() else {
+                unanswered = true
+                continue
+            }
             for tab in tabs {
                 let scriptableTab = unsafeBitCast(tab as AnyObject, to: ScriptableTab.self)
-                guard let url = scriptableTab.URL else { continue }
+                guard let url = scriptableTab.URL else {
+                    unanswered = true
+                    continue
+                }
                 result.append(ScriptingBridgeTab(tab: scriptableTab, url: url, trap: trap, browser: instance.browser.name))
             }
         }
         if let failure = trap.failure(browser: instance.browser.name) { throw failure }
+        if result.isEmpty && unanswered {
+            throw Failure(message: "\(instance.browser.name) nie odpowiedział na pytanie o karty")
+        }
         return result
     }
 }
@@ -112,19 +152,11 @@ private final class ErrorTrap: NSObject, SBApplicationDelegate {
         return nil
     }
 
-    /// Translates the trapped error into the app's own failure type, naming the
-    /// two causes worth telling apart by hand: `-1743` is refused Automation
-    /// permission, `-600`/`-609` mean the process went away mid-question.
+    /// Translates the trapped error into the app's own failure type via
+    /// `ScriptingBridgeBrowsers.Failure.appleEvent(code:browser:)`.
     func failure(browser: String) -> ScriptingBridgeBrowsers.Failure? {
         guard let lastError else { return nil }
         let code = (lastError as NSError).code
-        switch code {
-        case -1743:
-            return .init(message: "Brak zgody na sterowanie \(browser) — włącz ją w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja")
-        case -600, -609:
-            return .init(message: "\(browser) przestał działać w trakcie sprawdzania")
-        default:
-            return .init(message: "\(browser): błąd Apple Events \(code)")
-        }
+        return ScriptingBridgeBrowsers.Failure.appleEvent(code: code, browser: browser)
     }
 }
