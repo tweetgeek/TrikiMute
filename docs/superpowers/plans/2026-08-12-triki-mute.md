@@ -1198,7 +1198,13 @@ final class AppleScriptRunner: ScriptRunner {
                 opis: info[NSAppleScript.errorMessage] as? String ?? "nieznany błąd"
             )
         }
-        return wynik.stringValue ?? "NONE"
+        guard let tekst = wynik.stringValue else {
+            // Brak wartości tekstowej to anomalia, nie odpowiedź. Zwrócenie
+            // "NONE" udawałoby brak rozmowy, czyli mylnie zapewniałoby,
+            // że wszystko jest w porządku.
+            throw Blad(kod: 0, opis: "Skrypt nie zwrócił wartości tekstowej")
+        }
+        return tekst
     }
 }
 ```
@@ -1631,6 +1637,14 @@ final class AppState {
     private let polaczenie = TrikiConnection()
     private let controller = MeetController(runner: AppleScriptRunner())
     private var sonda: Timer?
+    private var sondaWToku = false
+
+    /// Skrypty wykonują się poza głównym wątkiem. `NSAppleScript` blokuje na
+    /// czas rozmowy z przeglądarką, a przy pierwszym użyciu także na czas
+    /// odpowiedzi użytkownika na pytanie o zgodę — na głównym wątku zamroziłoby
+    /// to pasek menu. Kolejka jest szeregowa, więc sonda i Akcje nie wchodzą
+    /// sobie w drogę. Stan zmieniamy wyłącznie po powrocie na główny wątek.
+    private let kolejkaSkryptow = DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
 
     /// Odstęp sondy. Sonda chodzi wyłącznie przy uzbrojonym Kapslu — poza
     /// rozmową nie ma czego odpytywać.
@@ -1678,12 +1692,20 @@ final class AppState {
     }
 
     func wykonaj(_ action: MeetAction) {
-        let wynik = controller.perform(action, browsers: BrowserOrder.uporzadkowane())
-        ostatniaAkcja = opis(action, wynik)
-        // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt musi
-        // poczekać, inaczej zobaczymy stan sprzed Akcji.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.odswiezCel()
+        // NSWorkspace pytamy jeszcze na głównym wątku.
+        let przegladarki = BrowserOrder.uporzadkowane()
+        let controller = self.controller
+        kolejkaSkryptow.async {
+            let wynik = controller.perform(action, browsers: przegladarki)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                ostatniaAkcja = opis(action, wynik)
+                // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt
+                // musi poczekać, inaczej zobaczymy stan sprzed Akcji.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.odswiezCel()
+                }
+            }
         }
     }
 
@@ -1714,25 +1736,41 @@ final class AppState {
         cel = nil
         rssi = nil
         bladSondy = nil
+        sondaWToku = false
     }
 
     /// Jeden przebieg sondy: gdzie jest Cel, w jakim jest stanie i jak mocny
     /// jest sygnał Kapsla. Siła sygnału przychodzi asynchronicznie przez onRSSI.
+    ///
+    /// Flaga `sondaWToku` chroni przed piętrzeniem: gdyby przeglądarka się
+    /// zawiesiła, timer co 3 sekundy dokładałby kolejne wywołania do kolejki
+    /// bez końca.
     private func odswiezCel() {
-        switch controller.probe(browsers: BrowserOrder.uporzadkowane()) {
-        case .target(let wynik):
-            cel = wynik
-            bladSondy = nil
-        case .noTarget:
-            cel = nil
-            bladSondy = nil
-        case .failed(let opis):
-            // Awaria sondy nie może udawać braku rozmowy — pasek menu ma
-            // pokazać przyczynę, a nie „wszystko gra".
-            cel = nil
-            bladSondy = opis
-        }
+        guard !sondaWToku else { return }
+        sondaWToku = true
+        let przegladarki = BrowserOrder.uporzadkowane()
+        let controller = self.controller
         polaczenie.odczytajRSSI()
+        kolejkaSkryptow.async {
+            let wynik = controller.probe(browsers: przegladarki)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                sondaWToku = false
+                switch wynik {
+                case .target(let cel):
+                    self.cel = cel
+                    bladSondy = nil
+                case .noTarget:
+                    cel = nil
+                    bladSondy = nil
+                case .failed(let opis):
+                    // Awaria sondy nie może udawać braku rozmowy — pasek menu
+                    // ma pokazać przyczynę, a nie „wszystko gra".
+                    cel = nil
+                    bladSondy = opis
+                }
+            }
+        }
     }
 }
 ```
@@ -1869,13 +1907,21 @@ W `Sources/TrikiMute/AppState.swift` zastąp metodę `wykonaj`:
 
 ```swift
     func wykonaj(_ action: MeetAction) {
-        let wynik = controller.perform(action, browsers: BrowserOrder.uporzadkowane())
-        Feedback.zagraj(wynik)
-        ostatniaAkcja = opis(action, wynik)
-        // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt musi
-        // poczekać, inaczej zobaczymy stan sprzed Akcji.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.odswiezCel()
+        // NSWorkspace pytamy jeszcze na głównym wątku.
+        let przegladarki = BrowserOrder.uporzadkowane()
+        let controller = self.controller
+        kolejkaSkryptow.async {
+            let wynik = controller.perform(action, browsers: przegladarki)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                Feedback.zagraj(wynik)
+                ostatniaAkcja = opis(action, wynik)
+                // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt
+                // musi poczekać, inaczej zobaczymy stan sprzed Akcji.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.odswiezCel()
+                }
+            }
         }
     }
 ```
