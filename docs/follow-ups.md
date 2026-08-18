@@ -8,6 +8,28 @@ Kolejność mniej więcej według wartości naprawy.
 
 ## Warte zrobienia przy następnym dotknięciu kodu
 
+**Zapis wybranego identyfikatora nie jest pilnowany testem.** To jedyna
+obietnica, dla której parowanie z wyboru w ogóle powstało: potwierdzenie ma
+zapisać urządzenie, które wskazałeś, a nie to, z którym aplikacja akurat jest
+połączona. Testy pokrywają wyłącznie odmowy — brak sesji i brak wybranego
+kandydata. Sam zapis opiera się na przeglądzie kodu i na teście ręcznym.
+
+Końcowa recenzja wskazała wyjście, i nie jest nim walka z `CBPeripheral`.
+Sesja parowania trzyma wybrane urządzenie jako obiekt, choć zapis potrzebuje
+z niego wyłącznie identyfikatora; obiekt jest niezbędny tylko do wywołań
+CoreBluetooth przy przerwaniu. Gdyby źródłem prawdy o wyborze był identyfikator,
+a obiekt wyszukiwany dopiero w miejscu faktycznego wywołania, decyzja o tym, co
+zapisać, sprowadzałaby się do porównania dwóch identyfikatorów — testowalnego
+bez żadnego prawdziwego urządzenia. Nietestowalność jest tu więc częściowo
+wyborem projektowym, nie ograniczeniem platformy.
+
+**Dwa z trzech testów kolejności sprzątania niczego nie odróżniają.** Przy
+usterce, w której faza była przypisywana po wywołaniu warstwy połączenia,
+tylko `cancelDuringConfirmingLeavesNoLiveTimerBehind` pada przed poprawką.
+Pozostałe dwa to sensowne pokrycie, ale przeszłyby również bez niej — cała waga
+weryfikacji tej usterki spoczywa na jednym teście.
+
+
 **Testy `AppState` czytają prawdziwy `NSWorkspace`.** Przez
 `BrowserOrder.uporzadkowane()` sięgają po aplikację na wierzchu. Gdyby przy
 uruchamianiu testów była nią przeglądarka, kolejność listy by się przestawiła
