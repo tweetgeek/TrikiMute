@@ -181,6 +181,10 @@ final class AppState {
     /// that a long meeting where nobody presses anything never trips it
     /// (every Target sighting resets the clock — see `refreshTarget()`), but
     /// still short enough to matter for a capsule left Armed and forgotten.
+    /// `sleepDevice()` triggers the identical disconnect by hand, for
+    /// exactly the case this timeout can't cover on its own: someone who
+    /// knows the call just ended and doesn't want to wait 10 minutes for the
+    /// Kapsel to sleep.
     /// Not `private`: `AppStateTests` crosses it deliberately via the
     /// injected clock.
     static let idleTimeout: TimeInterval = 600.0
@@ -704,6 +708,40 @@ final class AppState {
         pairing = .inactive
         connection.forget()
         updateProbing()
+    }
+
+    /// Puts the device to sleep on demand, without waiting for
+    /// `idleTimeout` to pass on its own. Menu-visible only while
+    /// `deviceState == .armed` (see `MenuBarView`) — there is nothing to put
+    /// to sleep otherwise: `.disconnected`/`.searching` already means the
+    /// device isn't transmitting, and `.error` means the app isn't even
+    /// connected. Guarded here too, defensively, same posture as
+    /// `forgetDevice()`.
+    ///
+    /// Reuses the exact same mechanism `checkIdleDeadline()` uses, rather
+    /// than a parallel one: `connection.disconnectIdle()` disconnects, and
+    /// the Kapsel — having nothing left to transmit to — sleeps as a
+    /// consequence, exactly as it does whenever the app isn't running at
+    /// all. This does **not** send any kind of sleep command; no such
+    /// command is known to exist (see `TrikiConnection.disconnectIdle()`'s
+    /// doc comment) — only the trigger differs from the automatic path (a
+    /// menu click here, `idleTimeout` elapsing there), not the effect.
+    ///
+    /// The saved identifier is left untouched — this is emphatically **not**
+    /// `forgetDevice()` — so the existing pending `connect()` picks the
+    /// device back up, and the menu falls back to
+    /// "Szukam Kapsla — naciśnij przycisk, żeby go obudzić", the moment the
+    /// next press wakes it. `idleDeadline` is cleared for the same reason
+    /// `checkIdleDeadline()` clears it before disconnecting: the real
+    /// disconnect completes asynchronously (a CoreBluetooth callback, not a
+    /// synchronous return), so nothing should be left around that could
+    /// still read as "counting down" for the brief window before
+    /// `onState(.disconnected)` arrives and `updateProbing()` clears it
+    /// again anyway.
+    func sleepDevice() {
+        guard deviceState == .armed, pairing == .inactive else { return }
+        idleDeadline = nil
+        connection.disconnectIdle()
     }
 
     /// True while none of the pairing timers is currently scheduled. Exists

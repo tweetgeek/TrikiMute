@@ -208,6 +208,19 @@ w odróżnieniu od „Zapomnij Kapsel" — i pasek menu wraca do tekstu
 „Szukam Kapsla — naciśnij przycisk, żeby go obudzić", bo to dokładnie ten
 sam stan, w jakim aplikacja czeka na pierwsze uzbrojenie po starcie.
 
+**Rozłączenie na żądanie.** To samo rozłączenie da się wywołać ręcznie
+z paska menu — pozycja „Uśpij Kapsel", widoczna wyłącznie gdy Kapsel jest
+uzbrojony (nieuzbrojony już śpi albo nigdy nie był sparowany, więc nie ma
+czego usypiać). To nie jest osobna ścieżka: `AppState.sleepDevice()` woła
+dokładnie ten sam `TrikiConnection.disconnectIdle()`, którego używa
+rozłączenie z bezczynności — różni się wyłącznie wyzwalacz (kliknięcie
+w menu zamiast upływu `idleTimeout`), nie skutek. Aplikacja rozłącza się,
+a Kapsel zasypia w konsekwencji tego rozłączenia — to wciąż nie jest
+wysłanie żadnej komendy usypiającej, bo taka nie istnieje (patrz wyżej).
+Identyfikator przeżywa nietknięty, dokładnie jak przy rozłączeniu
+z bezczynności, więc kolejne naciśnięcie ponownie uzbraja Kapsla przez ten
+sam zawieszony `connect()`.
+
 **Parowanie — z wyboru, nie automatyczne.** Wcześniejsza wersja tej sekcji
 opisywała parowanie jako w pełni automatyczne: aplikacja łączyła się z
 pierwszym urządzeniem, którego nazwa zawierała „triki". To założenie nie
@@ -331,6 +344,10 @@ Rozwijane menu:
   z licznikiem pozostałych (z zaznaczeniem, gdy licznik właśnie wystartował
   od nowa po rozłączeniu), albo komunikat o niepowodzeniu (osobny dla
   łączenia, dla naciśnięć i dla całej próby); zawsze z opcją przerwania
+- „Uśpij Kapsel" — rozłącza uzbrojony Kapsel na żądanie zamiast czekać na
+  rozłączenie z bezczynności; widoczne wyłącznie, gdy Kapsel jest uzbrojony
+- „Zapomnij Kapsel" — czyści zapamiętany identyfikator; widoczne wyłącznie,
+  gdy jakiś jest zapisany
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
 - akcja testowa (przełącz mikrofon bez Kapsla)
 - wyjście
@@ -400,6 +417,12 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   przycisku odświeżają zegar i nie dopuszczają do rozłączenia, zapamiętany
   identyfikator przeżywa rozłączenie, a aplikacja wraca do „szukam", nie do
   rozłączenia bez zapisanego urządzenia
+- `AppState.sleepDevice()` — to samo rozłączenie wywołane ręcznie: rozłącza
+  i zostawia zapamiętany identyfikator nietknięty (jak wyżej, ten sam
+  dowód), jest bez efektu, gdy Kapsel nie jest uzbrojony (nie ma czego
+  usypiać), i jest bez efektu w trakcie parowania (wcześniej zapisany Kapsel
+  może zostać w tle Uzbrojony, podczas gdy użytkownik przegląda kandydatów
+  do zmiany — nie jest to ten Kapsel, którego dotyczy przycisk w menu)
 - `TrikiConnection`: `CentralManaging` — wąski protokół nad pięcioma
   wywołaniami `CBCentralManager`, którego faktycznie używa ten plik —
   pozwala przypiąć testami jednostkowymi część inwariantów, które wcześniej

@@ -1243,3 +1243,81 @@ private func chooseAndArmCandidate(
     #expect(!connection.disconnectIdleCalled)
     #expect(state.deviceState == .armed)
 }
+
+// MARK: - Manual sleep ("Uśpij Kapsel")
+
+/// The plain case, mirroring `idleTimeoutDisconnectsAfterTargetAbsentAndReturnsToWaiting`
+/// but triggered by hand instead of by the clock — this is the whole point
+/// of reusing the same path: the observable outcome must be identical. The
+/// saved identifier must survive (this is not `forgetDevice()`), and the
+/// app must land back on `.searching` — waiting for the next press to
+/// re-arm it — rather than on `.disconnected` with nothing saved.
+@Test @MainActor func sleepDeviceDisconnectsAndReturnsToWaitingWhileKeepingSavedDevice() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    #expect(state.deviceState == .armed)
+
+    state.sleepDevice()
+
+    // Same call the automatic idle path makes — proves reuse, not a
+    // parallel implementation.
+    #expect(connection.disconnectIdleCalled)
+    #expect(!connection.forgetCalled)
+    #expect(state.hasSavedDevice)
+    #expect(state.deviceState == .searching)
+}
+
+/// Nothing to put to sleep unless the device is actually Armed — this is
+/// the guard `MenuBarView` mirrors to decide whether "Uśpij Kapsel" is even
+/// shown. Covers both device-level states the button must stay hidden (and
+/// harmless if somehow invoked) for.
+@Test @MainActor func sleepDeviceIsANoOpWhenNotArmed() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    // Freshly constructed: .disconnected, nothing to sleep.
+    state.sleepDevice()
+    #expect(!connection.disconnectIdleCalled)
+    #expect(state.deviceState == .disconnected)
+
+    connection.onState?(.searching)
+    state.sleepDevice()
+    #expect(!connection.disconnectIdleCalled)
+    #expect(state.deviceState == .searching)
+}
+
+/// Defensive guard mirroring `checkIdleDeadline()`'s own `pairing == .inactive`
+/// check: a previously saved device can stay Armed in the background while
+/// the user is mid-pairing, browsing candidates for a *different* Kapsel
+/// (see `startPairing()`'s "change device" note) — `MenuBarView` never
+/// shows "Uśpij Kapsel" in that phase (the pairing section switches away
+/// from `.inactive`), but `sleepDevice()` itself must not depend on the
+/// menu enforcing that.
+@Test @MainActor func sleepDeviceIsANoOpDuringPairing() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    state.startPairing()
+    guard case .searching = state.pairing else {
+        Issue.record("expected .searching once startPairing() succeeds")
+        return
+    }
+
+    state.sleepDevice()
+
+    #expect(!connection.disconnectIdleCalled)
+    #expect(state.deviceState == .armed)
+    #expect(state.pairing == .searching([]))
+}

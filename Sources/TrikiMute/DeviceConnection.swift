@@ -46,11 +46,14 @@ protocol DeviceConnection: AnyObject {
     /// advertise" path (the same one that already handles an ordinary lost
     /// connection) picks it back up the moment its button next wakes it.
     /// The opposite of `forget()`: same teardown, no forgetting. Called by
-    /// `AppState` once its idle policy (no Meet Target for a while) decides
-    /// the device should be allowed to sleep — see
-    /// `TrikiConnection.disconnectIdle()` for why disconnecting, not a
-    /// device-side sleep command, is the only reliable lever: there is no
-    /// documented way to tell the Kapsel to sleep on request.
+    /// `AppState` from two places: its idle policy (no Meet Target for a
+    /// while) and the "Uśpij Kapsel" menu action, triggered by hand instead
+    /// of by a clock — both decide the device should be allowed to sleep,
+    /// and both get there through this one method, so the two behave
+    /// identically. See `TrikiConnection.disconnectIdle()` for why
+    /// disconnecting, not a device-side sleep command, is the only reliable
+    /// lever: there is no documented way to tell the Kapsel to sleep on
+    /// request.
     func disconnectIdle()
 
     /// Enters discovery mode: scans and reports candidates via

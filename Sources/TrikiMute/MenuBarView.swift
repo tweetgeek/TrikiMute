@@ -57,14 +57,20 @@ struct MenuBarView: View {
     private static let pairingIcon = "dot.radiowaves.left.and.right"
 
     /// Pairing lives entirely in one place in the menu — this switches on
-    /// `AppState.pairing` and renders whichever step is current. "Zapomnij
-    /// Kapsel" sits next to the pairing button, in the same `.inactive` case:
-    /// pairing *replaces* the saved device, forgetting *removes* it with
-    /// nothing to replace it with (lost or given-away capsule) — two
-    /// different needs, so two buttons. Pairing comes first and forgetting
-    /// second, matching how often each is actually used: pairing is the
-    /// common action (first setup, or swapping to a different capsule),
-    /// forgetting is destructive and rare.
+    /// `AppState.pairing` and renders whichever step is current. "Uśpij
+    /// Kapsel" and "Zapomnij Kapsel" both sit next to the pairing button, in
+    /// the same `.inactive` case — all three are device-lifecycle actions,
+    /// not call actions like toggling the microphone, so they belong here
+    /// rather than up with "Przełącz mikrofon"/"Przełącz kamerę". Order
+    /// follows how often each is actually used: pairing first (common —
+    /// first setup, or swapping to a different capsule), then sleeping
+    /// (occasional — someone remembers right after a call ends and doesn't
+    /// want to wait out `AppState.idleTimeout`), then forgetting last
+    /// (destructive and rare). Sleeping and forgetting answer different
+    /// questions — pairing *replaces* the saved device, sleeping
+    /// *disconnects* it without touching what's saved, forgetting *removes*
+    /// it with nothing to replace it — so three different buttons instead of
+    /// collapsing any two together.
     @ViewBuilder
     private var pairingSection: some View {
         switch state.pairing {
@@ -78,6 +84,19 @@ struct MenuBarView: View {
                 state.startPairing()
             } label: {
                 Label(state.hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla", systemImage: "plus.circle")
+            }
+            // Only meaningful — and only shown — when the Kapsel is
+            // actually transmitting: `.disconnected`/`.searching` already
+            // means it isn't, so there's nothing to put to sleep. Same
+            // `moon.zzz.fill` symbol `AppState.deviceIcon` shows for the
+            // disconnected/searching state this button produces — pressing
+            // it turns the device into exactly that icon.
+            if state.deviceState == .armed {
+                Button {
+                    state.sleepDevice()
+                } label: {
+                    Label("Uśpij Kapsel", systemImage: "moon.zzz.fill")
+                }
             }
             // Only meaningful — and only shown — when there's actually
             // something saved to clear. No confirmation dialog: the action
