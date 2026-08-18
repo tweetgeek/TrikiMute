@@ -5,20 +5,28 @@ struct MenuBarView: View {
     let state: AppState
 
     var body: some View {
-        Text(state.deviceDescription)
+        Label(state.deviceDescription, systemImage: state.deviceIcon)
         if let battery = state.battery {
-            Text("Bateria: \(battery)%")
+            Label("Bateria: \(battery)%", systemImage: AppState.batteryIcon(for: battery))
         }
         if let rssi = state.rssi {
-            Text("Sygnał: \(rssi) dBm")
+            Label("Sygnał: \(rssi) dBm", systemImage: "antenna.radiowaves.left.and.right")
         }
-        Text(state.targetDescription)
-        Text("Ostatnia akcja: \(state.lastAction)")
+        Label(state.targetDescription, systemImage: state.targetIcon)
+        Label("Ostatnia akcja: \(state.lastAction)", systemImage: "clock.arrow.circlepath")
 
         Divider()
 
-        Button("Przełącz mikrofon") { state.perform(.microphone) }
-        Button("Przełącz kamerę") { state.perform(.camera) }
+        Button {
+            state.perform(.microphone)
+        } label: {
+            Label("Przełącz mikrofon", systemImage: "mic")
+        }
+        Button {
+            state.perform(.camera)
+        } label: {
+            Label("Przełącz kamerę", systemImage: "video")
+        }
 
         Divider()
 
@@ -26,13 +34,27 @@ struct MenuBarView: View {
 
         Divider()
 
-        Button(state.loginItemDescription) { state.toggleLoginItem() }
-        if let loginItemError = state.loginItemError {
-            Text("Autostart: \(loginItemError)")
+        Button {
+            state.toggleLoginItem()
+        } label: {
+            Label(state.loginItemDescription, systemImage: "power")
         }
-        Button("Zakończ") { NSApplication.shared.terminate(nil) }
-            .keyboardShortcut("q")
+        if let loginItemError = state.loginItemError {
+            Label("Autostart: \(loginItemError)", systemImage: "exclamationmark.circle")
+        }
+        Button {
+            NSApplication.shared.terminate(nil)
+        } label: {
+            Label("Zakończ", systemImage: "xmark.circle.fill")
+        }
+        .keyboardShortcut("q")
     }
+
+    /// Shared by every "still mid-pairing" row below — `dot.radiowaves.left.and.right`
+    /// is exactly what `AppState.iconName` shows in the tray for the same
+    /// condition (`pairing != .inactive`), so a row about choosing a device
+    /// never disagrees with the icon sitting right above the menu.
+    private static let pairingIcon = "dot.radiowaves.left.and.right"
 
     /// Pairing lives entirely in one place in the menu — this switches on
     /// `AppState.pairing` and renders whichever step is current. "Zapomnij
@@ -52,8 +74,10 @@ struct MenuBarView: View {
             // whether a device is saved, not off `deviceState` — that can
             // read `.error` (e.g. Bluetooth off) even with a device already
             // saved, which used to show "Paruj Kapsla" in that case.
-            Button(state.hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla") {
+            Button {
                 state.startPairing()
+            } label: {
+                Label(state.hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla", systemImage: "plus.circle")
             }
             // Only meaningful — and only shown — when there's actually
             // something saved to clear. No confirmation dialog: the action
@@ -62,8 +86,10 @@ struct MenuBarView: View {
             // menu already gives "Anuluj parowanie" for a comparably
             // consequential action.
             if state.hasSavedDevice {
-                Button("Zapomnij Kapsel") {
+                Button {
                     state.forgetDevice()
+                } label: {
+                    Label("Zapomnij Kapsel", systemImage: "trash")
                 }
             }
 
@@ -72,33 +98,61 @@ struct MenuBarView: View {
             // pressed — the single most important fact about this hardware
             // for anyone staring at an empty list (final review, Issue 4).
             if candidates.isEmpty {
-                Text("Szukam Kapsli… naciśnij przycisk kapsla, żeby go obudzić.")
+                Label("Szukam Kapsli… naciśnij przycisk kapsla, żeby go obudzić.", systemImage: Self.pairingIcon)
             } else {
                 ForEach(candidates) { candidate in
-                    Button("\(candidate.name) (\(candidate.rssi) dBm)") {
+                    Button {
                         state.choosePairingCandidate(candidate.id)
+                    } label: {
+                        Label("\(candidate.name) (\(candidate.rssi) dBm)", systemImage: Self.pairingIcon)
                     }
                 }
-                Text("Innego nie widać? Naciśnij jego przycisk, żeby go obudzić.")
+                Label("Innego nie widać? Naciśnij jego przycisk, żeby go obudzić.", systemImage: Self.pairingIcon)
             }
-            Button("Anuluj parowanie") { state.cancelPairing() }
+            cancelPairingButton
 
         case .connecting(let candidate):
             // Distinct from the press countdown below — Finding 1 (fix
             // round 1) flagged that showing the same text for "still
             // connecting" and "counting presses" left the user unable to
             // tell which one had actually failed.
-            Text("Łączę się z „\(candidate.name)”…")
-            Button("Anuluj parowanie") { state.cancelPairing() }
+            Label("Łączę się z „\(candidate.name)”…", systemImage: Self.pairingIcon)
+            cancelPairingButton
 
         case .confirming(let candidate, let remaining, let resetAfterDrop):
-            Text(confirmingText(name: candidate.name, remaining: remaining, resetAfterDrop: resetAfterDrop))
-            Button("Anuluj parowanie") { state.cancelPairing() }
+            // A dedicated "press the button" icon rather than the generic
+            // pairing one — this is the one phase where the user's next
+            // move is a physical action on the Kapsel itself, not a choice
+            // in the menu.
+            Label(
+                confirmingText(name: candidate.name, remaining: remaining, resetAfterDrop: resetAfterDrop),
+                systemImage: "hand.tap.fill"
+            )
+            cancelPairingButton
 
         case .failed(let message):
-            Text(message)
-            Button("Wróć do listy") { state.startPairing() }
-            Button("Anuluj parowanie") { state.cancelPairing() }
+            // Same triangle the tray uses for "something is broken" — a
+            // failed pairing attempt is itself a fault the user has to
+            // acknowledge, not a step still in progress.
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+            Button {
+                state.startPairing()
+            } label: {
+                Label("Wróć do listy", systemImage: "arrow.uturn.backward")
+            }
+            cancelPairingButton
+        }
+    }
+
+    /// Outline `xmark.circle`, not the filled variant `Zakończ` uses — the
+    /// same outline/filled distinction the tray icon uses for "ready" versus
+    /// "live" carries over here: cancelling pairing is reversible and cheap,
+    /// quitting the app is not.
+    private var cancelPairingButton: some View {
+        Button {
+            state.cancelPairing()
+        } label: {
+            Label("Anuluj parowanie", systemImage: "xmark.circle")
         }
     }
 

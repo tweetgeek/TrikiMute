@@ -774,19 +774,219 @@ private func chooseAndArmCandidate(
 /// Issue 4, second half: the mic-state icon must not claim live information
 /// during pairing — the probe is suppressed for the whole session (see
 /// `updateProbing()`), so `target` can be stale or `nil` even while a saved
-/// device stays connected and Armed in the background.
+/// device stays connected and Armed in the background. Rewritten to
+/// establish a genuine, flushed Target before pairing starts — the original
+/// version asserted `"mic.fill"` right after arming without ever letting a
+/// probe resolve, which happened to pass only because of the bug this task
+/// fixes (an Armed device with no Target yet read as `"mic.fill"` too).
 @Test @MainActor func iconIsDistinctWhilePairingEvenIfASavedDeviceStaysArmed() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["00"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
+    #expect(state.iconName == "mic.fill")
+
+    state.startPairing()
+    #expect(state.iconName == "dot.radiowaves.left.and.right")
+    #expect(state.iconName != "mic.fill")
+    #expect(state.iconName != "mic.slash.fill")
+}
+
+// MARK: - iconName: the seven states
+
+/// Rule 1. Folds Bluetooth-off, permission-refused, and any other
+/// device-level failure into the single `DeviceState.error` case — see
+/// `TrikiConnection`'s `DeviceState` doc. Checked first, ahead of pairing and
+/// the call state, both pinned separately below.
+@Test @MainActor func iconShowsTriangleWhenDeviceHasError() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.error("Bluetooth jest wyłączony"))
+
+    #expect(state.iconName == "exclamationmark.triangle.fill")
+}
+
+/// Rule 2. `.searching([])` is enough — every non-`.inactive` `PairingPhase`
+/// takes the same branch in `iconName`, so the emptiest live phase already
+/// exercises it. `.failed` is pinned separately below (it's still
+/// non-`.inactive`, but easy to mistake for "pairing is over").
+@Test @MainActor func iconShowsRadiowavesWhilePairingInProgress() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    state.startPairing()
+
+    #expect(state.iconName == "dot.radiowaves.left.and.right")
+}
+
+/// Rule 2, continued: `.failed` is a terminal pairing phase (see
+/// `PairingPhase`'s doc comment — it's "not live", but it is still
+/// non-`.inactive`), and the icon table's "pairing in progress (any phase)"
+/// is written to include it: a failed attempt still needs acknowledging via
+/// the pairing UI, not a fallback to whatever `deviceState` happens to read.
+@Test @MainActor func iconShowsRadiowavesWhilePairingHasFailed() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    state.startPairing()
+    clock.now += AppState.searchTimeout + 1
+    state.checkSearchDeadline()
+    guard case .failed = state.pairing else {
+        Issue.record("expected .failed once the search deadline passed")
+        return
+    }
+
+    #expect(state.iconName == "dot.radiowaves.left.and.right")
+}
+
+/// Rule 3. Covers both halves of "asleep": `.disconnected` is `AppState`'s
+/// own initial value, so a freshly constructed instance already pins it;
+/// `.searching` is the reconnect-in-progress reading `TrikiConnection`
+/// reports for a saved device that dropped and hasn't come back yet.
+@Test @MainActor func iconShowsMoonWhenDisconnectedOrSearching() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    #expect(state.deviceState == .disconnected)
+    #expect(state.iconName == "moon.zzz.fill")
+
+    connection.onState?(.searching)
+    #expect(state.iconName == "moon.zzz.fill")
+}
+
+/// Rule 4. A probe that fails on both browsers (see `MeetControllerTests`
+/// for the "THROW" convention) sets `probeError` and leaves `target` `nil` —
+/// distinct from rule 5's "no call", which is the same `target == nil` but
+/// with `probeError == nil` too.
+@Test @MainActor func iconShowsQuestionMarkWhenArmedButProbeCouldNotCheck() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["THROW", "THROW"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
+
+    #expect(state.probeError != nil)
+    #expect(state.iconName == "questionmark.circle.fill")
+}
+
+/// Rule 5. An empty `FakeRunner` answers every script with `"NONE"` — neither
+/// a valid length-2 mic/camera reading nor an error — which `MeetController`
+/// reads as `.noTarget`: no Meet tab found, not a failure to check one. The
+/// gap this whole task closes: before the fix, this rendered identically to
+/// rule 6 below.
+@Test @MainActor func iconShowsOutlineMicWhenArmedWithNoCall() {
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
+    queue.flush()
+
+    #expect(state.target == nil)
+    #expect(state.probeError == nil)
+    #expect(state.iconName == "mic")
+}
+
+/// Rule 6. `"00"` decodes as mic unmuted, camera on (see
+/// `MeetControllerTests`'s mapping) — a Target genuinely found, with the mic
+/// live.
+@Test @MainActor func iconShowsFilledMicWhenCallHasLiveMicrophone() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["00"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
+
+    #expect(state.target?.micMuted == false)
+    #expect(state.iconName == "mic.fill")
+}
+
+/// Rule 7. `"10"` decodes as mic muted, camera on.
+@Test @MainActor func iconShowsSlashMicWhenCallHasMutedMicrophone() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["10"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
+
+    #expect(state.target?.micMuted == true)
+    #expect(state.iconName == "mic.slash.fill")
+}
+
+// MARK: - iconName: precedence
+
+/// Rule 1 over rule 2: a device-level error occurring mid-pairing (Bluetooth
+/// turned off while browsing candidates, say) must still read as "something
+/// is broken" — the more alarming, more specific fact — not "choosing a
+/// device". Without this ordering, a real Bluetooth failure would be
+/// invisible behind the pairing icon for as long as a session stayed open.
+@Test @MainActor func iconPrefersDeviceErrorOverPairingInProgress() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    state.startPairing()
+    guard case .searching = state.pairing else {
+        Issue.record("expected .searching once startPairing() succeeds")
+        return
+    }
+
+    connection.onState?(.error("Bluetooth jest wyłączony"))
+
+    #expect(state.iconName == "exclamationmark.triangle.fill")
+}
+
+/// Rule 4 over rules 6/7: a probe failure must override a previously known
+/// call reading, not leave a stale `"mic.fill"`/`"mic.slash.fill"` on screen
+/// from before the browser stopped answering. `refreshTarget()`'s outcome
+/// switch already clears `target` whenever it sets `probeError` (see its
+/// comment), so this pins that the icon actually reflects that rather than
+/// remembering the last successful read.
+@Test @MainActor func iconPrefersProbeFailureOverAStaleCallReading() {
+    let connection = FakeDeviceConnection()
+    // First probe succeeds (mic live) — consumes one response on the first
+    // browser. Second probe fails on both browsers.
+    let runner = FakeRunner(["00", "THROW", "THROW"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
     #expect(state.iconName == "mic.fill")
 
-    state.startPairing()
-    #expect(state.iconName != "mic.fill")
-    #expect(state.iconName != "mic.slash.fill")
+    state.refreshTarget()
+    queue.flush()
+
+    #expect(state.target == nil)
+    #expect(state.probeError != nil)
+    #expect(state.iconName == "questionmark.circle.fill")
 }
 
 /// Coverage gap the final review flagged: `.connecting` already drops button

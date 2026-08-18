@@ -88,9 +88,20 @@ odrzucone. Dziś nieosiągalne, bo wstrzykiwany JavaScript emituje wyłącznie t
 dwa znaki, ale to najtańsze pozostałe utwardzenie z rodziny „awaria nie może
 udawać poprawnej odpowiedzi".
 
-**Ikona nie odróżnia „brak rozmowy" od „rozmowa, mikrofon włączony".** Przy
-uzbrojonym Kapslu i braku Celu pokazuje ten sam symbol co przy aktywnej
-rozmowie. Trzeci symbol uczyniłby ją uczciwą na pierwszy rzut oka.
+**Zrobione: ikona nie odróżniała „brak rozmowy" od „rozmowa, mikrofon
+włączony".** Przy uzbrojonym Kapslu i braku Celu pokazywała ten sam symbol co
+przy aktywnej rozmowie — `iconName` twierdziło, że mikrofon jest aktywny,
+mimo że aplikacja w ogóle nie wiedziała, czy trwa jakakolwiek rozmowa.
+Naprawione rozbiciem na siedem stanów: kontur `mic` dla „gotowy, brak
+rozmowy" odróżnia się teraz od wypełnionych `mic.fill`/`mic.slash.fill` dla
+rozmowy, `moon.zzz.fill` dla uśpienia, `dot.radiowaves.left.and.right` dla
+parowania, `questionmark.circle.fill` dla „nie mogę sprawdzić Celu" i
+`exclamationmark.triangle.fill` dla awarii urządzenia — ta ostatnia
+sprawdzana jako pierwsza, przed parowaniem, żeby awaria Bluetootha w trakcie
+parowania nie chowała się za ikoną wyboru urządzenia. Menu dostało tę samą
+ikonografię: każdy wiersz (informacyjny i akcja) ma teraz symbol, w tym
+bateria dobierana z poziomu naładowania. Pełne uzasadnienie kolejności
+i mapowania — w opisie zadania i historii commitów.
 
 **Kanał raportujący awarie sam może zawieść po cichu.** `NSSound(named:)?.play()`
 nic nie robi, gdy dźwięku brakuje, a instancja nie jest przetrzymywana na czas

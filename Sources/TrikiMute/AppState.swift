@@ -364,22 +364,113 @@ final class AppState {
         connection.start()
     }
 
-    /// SF Symbol name for the menu bar icon.
+    /// SF Symbol name for the menu bar icon — the tray's own account of which
+    /// of seven states the app is in. Checked in this precedence order,
+    /// deliberately not the order `deviceState`/`pairing`/`target` happen to
+    /// be declared in:
     ///
-    /// Pairing gets its own symbol, checked before `deviceState` — `updateProbing()`
-    /// suppresses the probe for the entire pairing session, including while
-    /// merely browsing candidates with a previously saved device still
-    /// connected and Armed in the background. Without this, the icon kept
-    /// showing `mic.fill`/`mic.slash.fill` — asserting live mic state the app
-    /// had no way to actually know during pairing (final review, Issue 4).
+    /// 1. **Device-level error** (`deviceState == .error` — Bluetooth off,
+    ///    permission refused, or any other device-level failure). Checked
+    ///    first, ahead of pairing: a device error occurring mid-pairing (e.g.
+    ///    Bluetooth turned off while browsing candidates) is still "something
+    ///    is broken", not "choosing a device" — the more specific, more
+    ///    alarming fact wins regardless of what else is going on.
+    /// 2. **Pairing in progress** — any of `PairingPhase`'s non-`.inactive`
+    ///    cases, `.failed` included. `updateProbing()` suppresses the probe
+    ///    for the whole session, including while a previously saved device
+    ///    stays connected and Armed in the background (see `startPairing()`'s
+    ///    doc comment on "change device"), so the icon must not claim live
+    ///    mic state the app has stopped watching for the duration.
+    /// 3. **Disconnected or searching** — asleep, nothing to control.
+    /// 4. **Armed, probe couldn't check** (`probeError != nil`) — distinct
+    ///    from "no call": the app doesn't know, rather than confidently
+    ///    reporting nothing is happening. This is why the triangle (rule 1)
+    ///    and the question mark are different symbols — a probe failure is
+    ///    not a device-level error, and collapsing the two here would erase
+    ///    the exact distinction `probeError`'s own doc comment is careful to
+    ///    keep. In practice this case and "call, mic muted/live" never
+    ///    compete for the same moment: `refreshTarget()`'s outcome switch
+    ///    always clears one of `target`/`probeError` when it sets the other.
+    /// 5. **Armed, no call** (`target == nil`) — ready, nothing to control
+    ///    yet. The gap this rule closes (`docs/follow-ups.md`): before this,
+    ///    an Armed device with no Target rendered identically to rule 6/7
+    ///    below, so the tray asserted a live microphone the app had no way to
+    ///    confirm.
+    /// 6. **Call, mic live**.
+    /// 7. **Call, mic muted**.
+    ///
+    /// Rules 4-7 are only ever reached once rules 1-3 are settled — the
+    /// `switch` below only consults `probeError`/`target` inside the `.armed`
+    /// case, which is exactly the window in which `refreshTarget()` runs.
     var iconName: String {
-        guard pairing == .inactive else { return "antenna.radiowaves.left.and.right" }
+        if case .error = deviceState {
+            return "exclamationmark.triangle.fill"
+        }
+        guard pairing == .inactive else {
+            return "dot.radiowaves.left.and.right"
+        }
         switch deviceState {
-        case .error: return "exclamationmark.triangle"
-        case .disconnected, .searching: return "circle.dotted"
+        case .error:
+            // Unreachable — handled above. Spelled out anyway so the switch
+            // stays exhaustive without a `default:` silently swallowing a
+            // future `DeviceState` case.
+            return "exclamationmark.triangle.fill"
+        case .disconnected, .searching:
+            return "moon.zzz.fill"
         case .armed:
-            if probeError != nil { return "exclamationmark.triangle" }
-            return target?.micMuted == true ? "mic.slash.fill" : "mic.fill"
+            if probeError != nil { return "questionmark.circle.fill" }
+            guard let target else { return "mic" }
+            return target.micMuted ? "mic.slash.fill" : "mic.fill"
+        }
+    }
+
+    /// Icon for the device-status menu row — the same "what's the Kapsel
+    /// doing" vocabulary `iconName` uses for its device-level branches (rules
+    /// 1 and 3), factored out so the row and the tray icon read the same way
+    /// instead of risking drift between two hand-written mappings.
+    /// Deliberately ignores `pairing` and the call state: this row exists to
+    /// answer "is the Kapsel there", not "is there a call" — that's
+    /// `targetIcon`'s job, and `deviceDescription`'s text has the same split.
+    var deviceIcon: String {
+        switch deviceState {
+        case .error: return "exclamationmark.triangle.fill"
+        case .disconnected, .searching: return "moon.zzz.fill"
+        case .armed: return "mic"
+        }
+    }
+
+    /// Icon for the call-status menu row — the same mapping `iconName` uses
+    /// for its own "armed" branch (rules 4-7), factored out so this row and
+    /// the tray icon can't drift apart. Safe to read regardless of
+    /// `deviceState`/`pairing`: `probeError` and `target` are both `nil`
+    /// whenever probing isn't actually running (see `stopProbing()`), so
+    /// outside an active call this already and correctly falls through to
+    /// the "no call" case rather than needing its own guard on being Armed.
+    var targetIcon: String {
+        if probeError != nil { return "questionmark.circle.fill" }
+        guard let target else { return "mic" }
+        return target.micMuted ? "mic.slash.fill" : "mic.fill"
+    }
+
+    /// Icon for the battery menu row, picked from the charge level so it's
+    /// legible without reading the number. Buckets around the midpoints
+    /// between the five symbols SF Symbols offers for this (0/25/50/75/100),
+    /// the same snapping macOS's own battery menu uses. `battery.0percent`…
+    /// `battery.100percent` rather than the older `battery.0`…`battery.100`
+    /// names: Apple's SF Symbols metadata marks the older names deprecated
+    /// (renamed) in exactly macOS 14, this project's floor, so the newer
+    /// names are both the correct ones to use going forward and no less
+    /// available here — verified present via `NSImage(systemSymbolName:)`.
+    /// `static` and taking the level as a parameter (not reading `battery`
+    /// itself) so it's trivially testable and reusable from `MenuBarView`
+    /// without another `AppState` indirection.
+    static func batteryIcon(for percentage: Int) -> String {
+        switch min(100, max(0, percentage)) {
+        case 0..<13: return "battery.0percent"
+        case 13..<38: return "battery.25percent"
+        case 38..<63: return "battery.50percent"
+        case 63..<88: return "battery.75percent"
+        default: return "battery.100percent"
         }
     }
 
