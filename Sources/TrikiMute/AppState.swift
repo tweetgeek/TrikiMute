@@ -23,11 +23,29 @@ import TrikiMuteCore
 /// `AppState.chosenRequired`) survives a drop-and-reconnect unchanged, but
 /// the press clock in `confirming` only starts once the device is actually
 /// Armed.
+///
+/// **Fix round 2, Finding 1:** splitting the phase this way traded the
+/// original unbounded wait for a new one — `.confirming` falling back to
+/// `.connecting` on every drop, with a *fresh* `connectTimeout` each time,
+/// meant a device flapping at the edge of range could cycle indefinitely:
+/// neither per-phase timer ever reached its deadline, because both kept
+/// restarting. The single-deadline design this replaced was immune to that
+/// specific failure, because its one timer never restarted — worth stating
+/// plainly, since the fix for Finding 1 (round 1) is what opened this gap.
+/// `AppState.attemptTimeout` closes it: a bound on the whole attempt,
+/// started once in `choosePairingCandidate(_:)` and never reset by a
+/// per-phase restart, so indefinite flapping still resolves to `.failed`.
+///
+/// **Fix round 2, Finding 2:** a drop also discarded whatever press progress
+/// had already been counted, silently — the user could press two of three
+/// and, after a drop-and-reconnect, keep believing one more press would
+/// finish it. `confirming`'s third field, `resetAfterDrop`, makes the reset
+/// visible in the menu instead of just correct in the model.
 enum PairingPhase: Equatable {
     case inactive
     case searching([DeviceCandidate])
     case connecting(candidate: DeviceCandidate)
-    case confirming(candidate: DeviceCandidate, remaining: Int)
+    case confirming(candidate: DeviceCandidate, remaining: Int, resetAfterDrop: Bool)
     case failed(String)
 }
 
@@ -79,6 +97,22 @@ final class AppState {
     /// handled by `consume(_:at:)` directly; this timer is only needed for
     /// the no-more-presses case. Live only during `.confirming`.
     private var pressTimer: Timer?
+    /// Fires once, at `attemptTimeout`, started in `choosePairingCandidate(_:)`
+    /// and — unlike `connectTimer`/`pressTimer` — never reset by a
+    /// `.confirming` ↔ `.connecting` round trip. Closes the flapping gap
+    /// (fix round 2, Finding 1): a device dropping and reconnecting faster
+    /// than either per-phase timer's deadline can otherwise cycle
+    /// indefinitely, since both restart on every transition. This timer's
+    /// clock keeps running through all of that, so the whole attempt still
+    /// resolves to `.failed` within a bounded total time.
+    private var attemptTimer: Timer?
+    /// Set when `.confirming` falls back to `.connecting` after a drop (see
+    /// the `onState` handler), and read when `.connecting` promotes back to
+    /// `.confirming` on the next arming — so that `.confirming`'s
+    /// `resetAfterDrop` field reflects whether *this* attempt has already
+    /// lost press progress at least once. Reset to `false` at the start of
+    /// every new attempt in `choosePairingCandidate(_:)`.
+    private var droppedDuringAttempt = false
     /// Action in flight. Presses that arrive before the previous Action
     /// returns from the queue are dropped, not queued — a stale toggle,
     /// executed with a delay after a burst of presses, is worse than not
@@ -124,6 +158,26 @@ final class AppState {
     static let connectFailureMessage = "Kapsel nie odpowiedział w wyznaczonym czasie."
     static let pressFailureMessage = "Nie potwierdzono wyboru w wyznaczonym czasie — spróbuj ponownie."
 
+    /// Overall bound on one pairing attempt, from `choosePairingCandidate(_:)`
+    /// to a conclusion (confirmed, cancelled, or any failure) — independent
+    /// of how many times `connectTimer`/`pressTimer` individually restart.
+    /// Fix round 2, Finding 1: closes the flapping gap the round 1 split
+    /// opened (see the type-level comment on `PairingPhase`).
+    ///
+    /// One honest connect-plus-press cycle is at most `connectTimeout +
+    /// pressTimeout` = 25s. 60s is comfortably more than double that —
+    /// enough room for one legitimate drop-and-reconnect without failing a
+    /// merely slow connection, while still bounding indefinite flapping to
+    /// a wait a user will actually tolerate. Not `private`, for the same
+    /// reason as the other timeouts.
+    static let attemptTimeout: TimeInterval = 60.0
+
+    /// Names the real cause — repeated drops, not a single slow step — so
+    /// the user isn't told "didn't respond" or "didn't press enough" for a
+    /// failure that was neither. Not `private`, for the same reason as the
+    /// other messages.
+    static let flappingFailureMessage = "Kapsel wielokrotnie się rozłączał podczas parowania — spróbuj ponownie."
+
     /// Scripts run off the main thread. `NSAppleScript` blocks for the
     /// duration of the exchange with the browser, and on first use also for
     /// the duration of the user's answer to the permission prompt — on the
@@ -165,10 +219,10 @@ final class AppState {
                 // been reached yet; connectTimer is already running and
                 // covers all of them uniformly.
                 if state == .armed, let required = chosenRequired {
-                    pairing = .confirming(candidate: candidate, remaining: required)
+                    pairing = .confirming(candidate: candidate, remaining: required, resetAfterDrop: droppedDuringAttempt)
                     startPressTimer(required: required)
                 }
-            case .confirming(let candidate, _):
+            case .confirming(let candidate, _, _):
                 // The connection dropped before confirmation finished.
                 // TrikiConnection already re-issues a pending connect() on
                 // its own (see didDisconnectPeripheral) — this just gives
@@ -176,9 +230,16 @@ final class AppState {
                 // instead of leaving a press countdown on screen against a
                 // device that's no longer there (Finding 1, fix round 1).
                 // chosenRequired is untouched, so a later re-arm resumes
-                // with the same count the user was originally told.
+                // with the same required count — but the presses already
+                // counted are discarded (a dropped connection confirmed
+                // nothing), and droppedDuringAttempt records that this
+                // happened, so the next .confirming visibly says the count
+                // restarted (Finding 2, fix round 2) instead of silently
+                // resetting. attemptTimer is deliberately left running —
+                // that's the whole point of Finding 1's fix.
                 if state != .armed {
                     confirmation = nil
+                    droppedDuringAttempt = true
                     pairing = .connecting(candidate: candidate)
                     startConnectTimer()
                 }
@@ -346,35 +407,59 @@ final class AppState {
     /// between the list being drawn and the row being clicked) makes it
     /// strictly additional complexity in `TrikiConnection`, not a substitute
     /// for the bound.
+    ///
+    /// **Fix round 2:** also starts `attemptTimer` — the overall bound on
+    /// this whole attempt, independent of the `.connecting`/`.confirming`
+    /// round trips a flapping device can cause (see the type-level comment
+    /// on `PairingPhase`) — and resets `droppedDuringAttempt`, since this is
+    /// a fresh attempt with no drops yet.
     func choosePairingCandidate(_ id: UUID) {
         guard case .searching(let candidates) = pairing,
               let candidate = candidates.first(where: { $0.id == id }) else { return }
         connection.choose(id)
         chosenRequired = PairingConfirmation.randomRequirement()
         confirmation = nil
+        droppedDuringAttempt = false
         pairing = .connecting(candidate: candidate)
         updateProbing()
         startConnectTimer()
+        startAttemptTimer()
     }
 
     /// Aborts pairing at any phase and restores whatever was connected
     /// before `startPairing()` — a no-op if nothing is in progress.
     func cancelPairing() {
         guard pairing != .inactive else { return }
+        attemptTimer?.invalidate()
+        attemptTimer = nil
         connectTimer?.invalidate()
         connectTimer = nil
         pressTimer?.invalidate()
         pressTimer = nil
         confirmation = nil
         chosenRequired = nil
+        droppedDuringAttempt = false
         connection.cancelPairing()
         pairing = .inactive
         updateProbing()
     }
 
+    /// Starts the overall bound on one pairing attempt, once, from
+    /// `choosePairingCandidate(_:)`. Deliberately not called from
+    /// `startConnectTimer()`/`startPressTimer()` — restarting it on every
+    /// phase transition would recreate the exact flapping gap it exists to
+    /// close (fix round 2, Finding 1).
+    private func startAttemptTimer() {
+        attemptTimer?.invalidate()
+        attemptTimer = Timer.scheduledTimer(withTimeInterval: Self.attemptTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkAttemptDeadline() }
+        }
+    }
+
     /// Starts (or restarts) the bound on getting the chosen candidate
     /// connected and Armed. Invalidates any running `pressTimer` — the two
-    /// timers are mutually exclusive, one per live phase.
+    /// timers are mutually exclusive, one per live phase. Deliberately does
+    /// not touch `attemptTimer`.
     private func startConnectTimer() {
         pressTimer?.invalidate()
         pressTimer = nil
@@ -386,6 +471,7 @@ final class AppState {
 
     /// Starts the press-count bound, fresh, once the candidate is Armed.
     /// Invalidates `connectTimer` — its job is done for this arming.
+    /// Deliberately does not touch `attemptTimer`.
     private func startPressTimer(required: Int) {
         connectTimer?.invalidate()
         connectTimer = nil
@@ -403,22 +489,28 @@ final class AppState {
     private func handlePairingOutcome(_ outcome: PairingConfirmation.Outcome) {
         switch outcome {
         case .pending(let remaining):
-            if case .confirming(let candidate, _) = pairing {
-                pairing = .confirming(candidate: candidate, remaining: remaining)
+            if case .confirming(let candidate, _, let resetAfterDrop) = pairing {
+                pairing = .confirming(candidate: candidate, remaining: remaining, resetAfterDrop: resetAfterDrop)
             }
         case .confirmed:
+            attemptTimer?.invalidate()
+            attemptTimer = nil
             pressTimer?.invalidate()
             pressTimer = nil
             confirmation = nil
             chosenRequired = nil
+            droppedDuringAttempt = false
             connection.confirmPairing()
             pairing = .inactive
             updateProbing()
         case .timedOut:
+            attemptTimer?.invalidate()
+            attemptTimer = nil
             pressTimer?.invalidate()
             pressTimer = nil
             confirmation = nil
             chosenRequired = nil
+            droppedDuringAttempt = false
             // Tears down the unconfirmed candidate and restores the
             // previously saved device's suspended connection, if there was
             // one — same restoration `cancelPairing()` relies on.
@@ -548,14 +640,51 @@ final class AppState {
     /// clock instead of scheduling and waiting on a real `Timer`.
     func checkConnectDeadline() {
         guard case .connecting = pairing else { return }
+        attemptTimer?.invalidate()
+        attemptTimer = nil
         connectTimer?.invalidate()
         connectTimer = nil
         confirmation = nil
         chosenRequired = nil
+        droppedDuringAttempt = false
         // Tears down the stuck candidate and restores the previously saved
         // device's suspended connection, if there was one.
         connection.cancelPairing()
         pairing = .failed(Self.connectFailureMessage)
+        updateProbing()
+    }
+
+    /// Evaluates whether the overall attempt deadline has passed, without
+    /// waiting on the real `attemptTimer`. A no-op outside `.connecting`/
+    /// `.confirming` — in particular, a no-op if the attempt already
+    /// concluded through `checkConnectDeadline()`/`checkPressDeadline()`/a
+    /// full press count/`cancelPairing()` before this fired, since all of
+    /// those already invalidate `attemptTimer`.
+    ///
+    /// Fix round 2, Finding 1: this is what actually closes the flapping
+    /// gap — `connectTimer` and `pressTimer` alone cannot, because both
+    /// restart on every `.confirming` ↔ `.connecting` transition a flapping
+    /// device causes, so neither's individual deadline is ever reached.
+    ///
+    /// Package visibility (not `private`), same reasoning as `refreshTarget()`:
+    /// tests force this deterministically instead of scheduling and waiting
+    /// on a real `Timer`.
+    func checkAttemptDeadline() {
+        switch pairing {
+        case .connecting, .confirming: break
+        case .inactive, .searching, .failed: return
+        }
+        attemptTimer?.invalidate()
+        attemptTimer = nil
+        connectTimer?.invalidate()
+        connectTimer = nil
+        pressTimer?.invalidate()
+        pressTimer = nil
+        confirmation = nil
+        chosenRequired = nil
+        droppedDuringAttempt = false
+        connection.cancelPairing()
+        pairing = .failed(Self.flappingFailureMessage)
         updateProbing()
     }
 

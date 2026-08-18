@@ -69,8 +69,8 @@ struct MenuBarView: View {
             Text("Łączę się z „\(candidate.name)”…")
             Button("Anuluj parowanie") { state.cancelPairing() }
 
-        case .confirming(let candidate, let remaining):
-            Text("Potwierdź „\(candidate.name)”: naciśnij przycisk jeszcze \(remaining)×")
+        case .confirming(let candidate, let remaining, let resetAfterDrop):
+            Text(confirmingText(name: candidate.name, remaining: remaining, resetAfterDrop: resetAfterDrop))
             Button("Anuluj parowanie") { state.cancelPairing() }
 
         case .failed(let message):
@@ -78,5 +78,17 @@ struct MenuBarView: View {
             Button("Wróć do listy") { state.startPairing() }
             Button("Anuluj parowanie") { state.cancelPairing() }
         }
+    }
+
+    /// `resetAfterDrop` (fix round 2, Finding 2) — a dropped connection
+    /// confirms nothing, so a reconnect genuinely restarts the press count
+    /// from zero. That's correct, but silent is not: without this, a user
+    /// who had already pressed twice of three would keep pressing once more
+    /// after a drop and be confused when it timed out anyway.
+    private func confirmingText(name: String, remaining: Int, resetAfterDrop: Bool) -> String {
+        guard resetAfterDrop else {
+            return "Potwierdź „\(name)”: naciśnij przycisk jeszcze \(remaining)×"
+        }
+        return "Połączenie się zerwało — licz od nowa. Potwierdź „\(name)”: naciśnij przycisk jeszcze \(remaining)×"
     }
 }

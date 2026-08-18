@@ -264,7 +264,7 @@ private func chooseAndArmCandidate(
 
     _ = chooseAndArmCandidate(state, connection)
 
-    guard case .confirming(_, let required) = state.pairing else {
+    guard case .confirming(_, let required, _) = state.pairing else {
         Issue.record("expected .confirming once the candidate is armed")
         return
     }
@@ -409,7 +409,7 @@ private func chooseAndArmCandidate(
     clock.now += AppState.connectTimeout - 1
     connection.onState?(.armed)
 
-    guard case .confirming(_, let required) = state.pairing else {
+    guard case .confirming(_, let required, _) = state.pairing else {
         Issue.record("expected .confirming once armed")
         return
     }
@@ -453,26 +453,103 @@ private func chooseAndArmCandidate(
     }
 }
 
-/// The required press count is rolled exactly once per candidate — a
-/// drop-and-reconnect must not change the number the user was already told.
-@Test @MainActor func dropMidConfirmationPreservesTheOriginalRequiredCount() {
+/// Fix round 2, Finding 2 — the review flagged the previous version of this
+/// test (`dropMidConfirmationPreservesTheOriginalRequiredCount`) for never
+/// pressing before dropping, so it couldn't distinguish "progress reset" from
+/// "progress preserved": both would show `remaining == required` either way.
+/// This version presses first, so `remaining` has actually moved off
+/// `required` before the drop, then asserts it snaps back — proving the
+/// reset is real — while also confirming the *ceiling* number (`required`)
+/// itself never changes, and that `resetAfterDrop` — the flag the menu
+/// reads to tell the user their count restarted — flips from `false` to
+/// `true` exactly when it should.
+@Test @MainActor func dropMidConfirmationResetsProgressButKeepsTheOriginalRequiredCount() {
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
 
     _ = chooseAndArmCandidate(state, connection)
-    guard case .confirming(_, let requiredBeforeDrop) = state.pairing else {
+    guard case .confirming(_, let required, let resetBeforeDrop) = state.pairing else {
         Issue.record("expected .confirming once the candidate is armed")
         return
     }
+    #expect(resetBeforeDrop == false)
+    #expect(required >= 2)  // PairingConfirmation.requiredRange is 2...5 — always room for one press.
 
+    // Make real progress before the drop.
+    connection.onEvent?(.press)
+    guard case .confirming(_, let remainingAfterOnePress, _) = state.pairing else {
+        Issue.record("expected still .confirming after one press (below the minimum required)")
+        return
+    }
+    #expect(remainingAfterOnePress == required - 1)
+
+    // The device drops with progress on the board, then reconnects.
     connection.onState?(.disconnected)
     connection.onState?(.armed)
 
-    guard case .confirming(_, let requiredAfterReconnect) = state.pairing else {
+    guard case .confirming(_, let remainingAfterReconnect, let resetAfterDrop) = state.pairing else {
         Issue.record("expected .confirming again after reconnecting")
         return
     }
-    #expect(requiredAfterReconnect == requiredBeforeDrop)
+    // Progress genuinely restarted — not left at remainingAfterOnePress.
+    #expect(remainingAfterReconnect == required)
+    // ...and the menu is told so, instead of silently resetting.
+    #expect(resetAfterDrop == true)
+}
+
+/// Fix round 2, Finding 1 — the round 1 split traded the original unbounded
+/// wait for a new one: `.confirming` falling back to `.connecting` on every
+/// drop restarts `connectTimer` fresh each time, so a device flapping faster
+/// than either per-phase deadline never lets `connectTimer` or `pressTimer`
+/// actually expire. This proves `attemptTimer`'s independent, non-restarting
+/// bound is what actually resolves it — not a side effect of the per-phase
+/// timers, which this test shows are insufficient on their own by checking
+/// pairing is still genuinely live after the flapping, before invoking
+/// `checkAttemptDeadline()`. Before `attemptTimer`/`checkAttemptDeadline()`
+/// existed (fix round 1's code), this test could not even compile — the
+/// method didn't exist — which is as unambiguous a "fails against the prior
+/// implementation" as a compiled-language test can demonstrate.
+@Test @MainActor func repeatedDropsEventuallyFailInsteadOfFlappingForever() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -70)])
+    state.choosePairingCandidate(id)
+
+    // The device flaps at the edge of range: arms, drops, arms, drops... —
+    // each drop hands connectTimer a fresh 10s, so neither per-phase timer
+    // alone would ever reach its deadline if this kept up indefinitely.
+    for _ in 0..<20 {
+        connection.onState?(.armed)
+        connection.onState?(.disconnected)
+    }
+
+    // Proof the per-phase timers alone never resolved it: still genuinely
+    // mid-pairing after all that flapping.
+    switch state.pairing {
+    case .connecting, .confirming: break
+    default:
+        Issue.record("expected still mid-pairing after flapping — the per-phase timers should not have resolved this on their own")
+        return
+    }
+
+    // The overall attempt bound is independent of the per-phase restarts.
+    state.checkAttemptDeadline()
+
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed once the overall attempt budget passed, not stuck flapping")
+        return
+    }
+    #expect(message == AppState.flappingFailureMessage)
+    #expect(connection.cancelPairingCalled)
+
+    // No hang: pairing can be started again right away.
+    state.startPairing()
+    #expect(state.pairing == .searching([]))
 }

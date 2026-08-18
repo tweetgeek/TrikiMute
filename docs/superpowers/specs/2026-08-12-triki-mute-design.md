@@ -213,17 +213,35 @@ człowiekowi. Model dziś:
    trafiają do Meet** — inaczej sama próba sparowania właściwego Kapsla
    wyciszałaby przypadkowo mikrofon na dotychczasowym urządzeniu. Rozłączenie
    w trakcie potwierdzania cofa fazę do „łączę się" (z tym samym, raz
-   wylosowanym wymogiem) zamiast zostawiać na ekranie nieaktualny licznik
-   naciśnięć przeciw urządzeniu, którego już nie ma.
-5. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
+   wylosowanym wymogiem, ale wyzerowanym postępem naciśnięć — rozłączone
+   połączenie niczego nie potwierdziło) zamiast zostawiać na ekranie
+   nieaktualny licznik przeciw urządzeniu, którego już nie ma. Wyzerowanie
+   jest widoczne w komunikacie, nie tylko w danych — bez tego użytkownik,
+   który nacisnął już dwa z trzech razy, naciskałby tylko raz więcej i nie
+   rozumiałby, dlaczego mimo to upłynął czas.
+5. Osobne liczniki „łączę się" i „potwierdzanie" naprawiły wcześniejszy
+   problem (zbyt mało czasu na naciśnięcia po wolnym połączeniu), ale same
+   z siebie otworzyły inny: urządzenie migoczące na granicy zasięgu może
+   cyklicznie łączyć się i rozłączać szybciej, niż upływa którykolwiek z tych
+   dwóch, osobnych limitów — każde rozłączenie odświeża licznik łączenia od
+   zera, więc żaden z nich nigdy nie dobiega końca. Jednoprzebiegowy model
+   sprzed podziału był na to odporny, bo miał jeden licznik, który nigdy się
+   nie odświeżał. Zamyka to trzeci, nadrzędny limit (dziś: 60 s) na całą
+   próbę parowania danego kandydata, liczony raz od jego wybrania i nigdy nie
+   odświeżany przez restarty liczników cząstkowych — niezależnie od tego, ile
+   razy urządzenie zdąży się połączyć i rozłączyć, cała próba i tak kończy
+   się porażką w ograniczonym czasie, z komunikatem nazywającym prawdziwą
+   przyczynę: powtarzające się rozłączenia, nie pojedynczy wolny krok.
+6. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
    Kapsel na stałe; od tej pory łączenie wraca do modelu Uzbrojenia opisanego
    wyżej.
-6. Dwa osobne ograniczenia czasu (nie jedno wspólne) dają dwa osobne,
-   trafne komunikaty o niepowodzeniu: „Kapsel nie odpowiedział" dla fazy
-   łączenia i „nie potwierdzono wyboru" dla fazy naciśnięć — użytkownik nigdy
-   nie czyta komunikatu, który nie pasuje do tego, co faktycznie się stało.
-   Po upływie któregokolwiek faza wraca do listy kandydatów.
-7. Parowanie da się przerwać na każdym etapie; przerwanie zawsze zostawia
+7. Trzy osobne ograniczenia czasu dają trzy osobne, trafne komunikaty
+   o niepowodzeniu: „Kapsel nie odpowiedział" dla fazy łączenia, „nie
+   potwierdzono wyboru" dla fazy naciśnięć, „Kapsel wielokrotnie się
+   rozłączał" dla całej próby — użytkownik nigdy nie czyta komunikatu, który
+   nie pasuje do tego, co faktycznie się stało. Po upływie któregokolwiek
+   faza wraca do listy kandydatów.
+8. Parowanie da się przerwać na każdym etapie; przerwanie zawsze zostawia
    dotychczasowe urządzenie dokładnie w takim stanie, w jakim było przed
    `startPairing()`.
 
@@ -261,8 +279,9 @@ Rozwijane menu:
 - ostatnia Akcja
 - parowanie: pozycja startowa poza sesją; w trakcie — lista kandydatów
   z siłą sygnału, albo „łączę się" z wybranym, albo polecenie naciśnięć
-  z licznikiem pozostałych, albo komunikat o niepowodzeniu (osobny dla
-  łączenia i dla naciśnięć); zawsze z opcją przerwania
+  z licznikiem pozostałych (z zaznaczeniem, gdy licznik właśnie wystartował
+  od nowa po rozłączeniu), albo komunikat o niepowodzeniu (osobny dla
+  łączenia, dla naciśnięć i dla całej próby); zawsze z opcją przerwania
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
 - akcja testowa (przełącz mikrofon bez Kapsla)
 - wyjście
@@ -313,9 +332,13 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   naciśnięcie poza parowaniem działa jak dotąd, kandydat, który nigdy się nie
   uzbraja, kończy się porażką z komunikatem właściwym łączeniu (odrębnym od
   powyższego) zamiast zawieszeniem, kandydat uzbrojony tuż przed upływem
-  czasu łączenia dostaje mimo to pełne okno na naciśnięcia, a rozłączenie
-  w trakcie potwierdzania wraca do fazy łączenia z tym samym, raz
-  wylosowanym wymogiem zamiast zostawiać nieaktualny licznik na ekranie
+  czasu łączenia dostaje mimo to pełne okno na naciśnięcia, rozłączenie
+  w trakcie potwierdzania wraca do fazy łączenia z tym samym, raz wylosowanym
+  wymogiem, ale realnie wyzerowanym postępem naciśnięć — i menu jest o tym
+  poinformowane — a urządzenie migoczące szybciej niż którykolwiek z dwóch
+  liczników cząstkowych mimo to kończy próbę porażką w ograniczonym czasie
+  dzięki trzeciemu, nadrzędnemu limitowi, który restarty tamtych dwóch nie
+  odświeżają
 
 Test ręczny: warstwa CoreBluetooth na Kapslu, Akcje w prawdziwym Meet oraz
 pełny przebieg parowania (jeden i, jeśli dostępne, dwa Kapsle naraz).
