@@ -1458,6 +1458,12 @@ extension TrikiConnection: CBCentralManagerDelegate {
 
 extension TrikiConnection: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            Task { @MainActor in
+                onState?(.blad("Nie udało się odczytać usług: \(error.localizedDescription)"))
+            }
+            return
+        }
         Task { @MainActor in
             for usluga in peripheral.services ?? [] {
                 peripheral.discoverCharacteristics(nil, for: usluga)
@@ -1470,15 +1476,26 @@ extension TrikiConnection: CBPeripheralDelegate {
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
+        let uslugaUUID = service.uuid
+        if let error {
+            // Awaria na usłudze baterii nie unieruchamia aplikacji; awaria na
+            // NUS oznacza, że strumienia nie będzie.
+            if uslugaUUID == UUIDy.nus {
+                Task { @MainActor in
+                    onState?(.blad("Nie udało się odczytać charakterystyk: \(error.localizedDescription)"))
+                }
+            }
+            return
+        }
         Task { @MainActor in
             for ch in service.characteristics ?? [] {
                 switch ch.uuid {
                 case UUIDy.tx:
+                    // Komendę startową wysyłamy dopiero po potwierdzeniu
+                    // subskrypcji, w didUpdateNotificationStateFor.
                     peripheral.setNotifyValue(true, for: ch)
                 case UUIDy.rx:
                     rx = ch
-                    peripheral.writeValue(Self.komendaStartowa, for: ch, type: .withoutResponse)
-                    onState?(.uzbrojony)
                 case UUIDy.poziomBaterii:
                     peripheral.readValue(for: ch)
                     peripheral.setNotifyValue(true, for: ch)
@@ -1486,6 +1503,40 @@ extension TrikiConnection: CBPeripheralDelegate {
                     break
                 }
             }
+        }
+    }
+
+    /// Potwierdzenie subskrypcji. Dopiero tutaj wiadomo, że strumień ma jak
+    /// dotrzeć — więc dopiero tutaj wysyłamy komendę startową i ogłaszamy
+    /// Uzbrojenie.
+    ///
+    /// Kolejność, w jakiej CoreBluetooth zwraca charakterystyki, nie jest
+    /// gwarantowana. Ogłaszanie Uzbrojenia przy odkryciu RX mogło więc paść,
+    /// zanim aplikacja zdążyła zasubskrybować TX — czyli deklarować gotowość
+    /// połączenia, które nie miało jak niczego dostarczyć.
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        let uuid = characteristic.uuid
+        let wlaczone = characteristic.isNotifying
+        if let error {
+            if uuid == UUIDy.tx {
+                Task { @MainActor in
+                    onState?(.blad("Nie udało się włączyć strumienia: \(error.localizedDescription)"))
+                }
+            }
+            return
+        }
+        guard uuid == UUIDy.tx, wlaczone else { return }
+        Task { @MainActor in
+            guard let rx else {
+                onState?(.blad("Brak charakterystyki do wysłania komendy startowej"))
+                return
+            }
+            peripheral.writeValue(Self.komendaStartowa, for: rx, type: .withoutResponse)
+            onState?(.uzbrojony)
         }
     }
 
