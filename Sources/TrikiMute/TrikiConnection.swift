@@ -56,7 +56,10 @@ final class TrikiConnection: NSObject {
     var onRSSI: ((Int) -> Void)?
     var onCandidates: (([DeviceCandidate]) -> Void)?
 
-    private var central: CBCentralManager!
+    /// Typed as the narrow `CentralManaging` seam, not `CBCentralManager`,
+    /// so pairing's ordering invariants can be driven directly in tests. See
+    /// `CentralManaging`'s doc comment.
+    private var central: (any CentralManaging)!
     private var peripheral: CBPeripheral?
     private var rx: CBCharacteristic?
     private var parser = FrameParser()
@@ -80,6 +83,17 @@ final class TrikiConnection: NSObject {
 
     func start() {
         central = CBCentralManager(delegate: self, queue: .main)
+    }
+
+    /// Test seam: injects a fake `CentralManaging` directly, skipping
+    /// `start()`'s real `CBCentralManager` construction — there is no real
+    /// central manager to start against in a unit test, and no delegate
+    /// callbacks will arrive from a fake, so nothing here needs one.
+    /// Production code always goes through the no-argument initializer (via
+    /// `TrikiConnection()`) and calls `start()`.
+    convenience init(central: any CentralManaging) {
+        self.init()
+        self.central = central
     }
 
     /// Whether a device identifier is currently saved — independent of
@@ -230,8 +244,9 @@ final class TrikiConnection: NSObject {
     }
 
     /// Reacts to a Bluetooth power/authorization change. Split out from the
-    /// `CBCentralManagerDelegate` callback so the logic itself is a plain
-    /// method that can be called directly.
+    /// `CBCentralManagerDelegate` callback (which hands it a real
+    /// `CBCentralManager` the tests can't fake) so it can be exercised
+    /// directly and deterministically — see `CentralManaging`.
     ///
     /// Guards `.poweredOn`: with a pairing session live, restarts the scan
     /// instead of resuming the saved device's connection. Before this guard,
