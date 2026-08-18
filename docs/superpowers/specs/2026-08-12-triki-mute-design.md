@@ -195,18 +195,60 @@ o niepewnym wyniku, którego świadomie nie podjęto.
 
 Rozłączenie jest niezawodnym zamiennikiem nieznanej komendy usypiającej: bez
 połączenia Kapsel przestaje nadawać i zasypia sam, dokładnie tak jak wtedy,
-gdy aplikacja nie działa. Model Uzbrojenia opisany wyżej już to obsługuje —
-zawieszone `connect()` podnosi połączenie z powrotem, gdy tylko naciśnięcie
-przycisku obudzi Kapsla, więc rozłączenie z bezczynności nie różni się dla
-użytkownika od zwykłej utraty zasięgu. Polityka: aplikacja rozłącza się, gdy
-Kapsel jest uzbrojony i przez 10 minut nie istnieje żaden Cel. Zegar
-bezczynności liczy się od nowa przy każdym pojawieniu się Celu (sonda
-odpytuje co 3 s, więc trwa to przez całą rozmowę) i przy każdym zdarzeniu
-przycisku — długie spotkanie bez ani jednego naciśnięcia nie rozłączy Kapsla,
-dopóki trwa. Rozłączenie zostawia zapamiętany identyfikator nietknięty —
-w odróżnieniu od „Zapomnij Kapsel" — i pasek menu wraca do tekstu
-„Szukam Kapsla — naciśnij przycisk, żeby go obudzić", bo to dokładnie ten
-sam stan, w jakim aplikacja czeka na pierwsze uzbrojenie po starcie.
+gdy aplikacja nie działa. Polityka: aplikacja rozłącza się, gdy Kapsel jest
+uzbrojony i przez 10 minut nie istnieje żaden Cel. Zegar bezczynności liczy się
+od nowa przy każdym pojawieniu się Celu (sonda odpytuje co 3 s, więc trwa to
+przez całą rozmowę) i przy każdym zdarzeniu przycisku — długie spotkanie bez
+ani jednego naciśnięcia nie rozłączy Kapsla, dopóki trwa. Rozłączenie zostawia
+zapamiętany identyfikator nietknięty — w odróżnieniu od „Zapomnij Kapsel".
+
+**Oczekiwanie na faktyczne zaśnięcie.** Wcześniejsza wersja tej sekcji
+zakładała, że zawieszone `connect()` można wznowić w tej samej chwili, w
+której aplikacja się rozłączy — że rozłączenie z bezczynności nie różni się
+dla użytkownika od zwykłej utraty zasięgu. Usterka znaleziona ręcznie: kapsel
+usypiał widowiskowo w pasku menu, po czym natychmiast wracał do uzbrojenia,
+bo Kapsel po rozłączeniu jeszcze przez chwilę się reklamuje — a zawieszone
+`connect()` łapało go z powrotem w ułamku sekundy, wznawiając strumień
+i unieważniając cały sens rozłączenia. Niewiadoma, którą ten dokument
+i `docs/findings/2026-08-12-kapsel.md` zostawiały otwartą („czas do zaśnięcia
+bez połączenia nie został zmierzony"), okazała się mieć znaczenie
+praktyczne, nie tylko teoretyczne. Zmierzone: **Kapsel reklamuje się jeszcze
+przez około 180 sekund po rozłączeniu**, zanim faktycznie zaśnie i zniknie
+z eteru (`docs/findings/2026-08-12-kapsel.md`, dopisek 2026-08-13).
+
+Naprawa: po rozłączeniu na żądanie aplikacja nie wznawia zawieszonego
+`connect()` od razu, tylko wchodzi w osobny stan — `DeviceState.fallingAsleep`
+— i skanuje krótkimi seriami w poszukiwaniu tego konkretnego, zapisanego
+identyfikatora (inny kapsel reklamujący się w pobliżu nic nie mówi o tym
+naszym). Seria trwa 4 s, nowa zaczyna się co 20 s (20% czasu skanowania,
+80% przerwy) — Kapsel potrzebuje ok. trzech minut, więc sprawdzanie co 20 s
+zauważa zniknięcie w niewielkim ułamku tego okna, bez skanowania niemal bez
+przerwy. Całość ma nadrzędny limit **270 s (4,5 minuty)** — z rozsądnym
+zapasem (~50%) ponad zmierzone 180 s — na wypadek, gdyby urządzenie nigdy nie
+zniknęło z reklam; po jego upływie aplikacja wznawia zawieszone `connect()`
+mimo wszystko, tak samo jak przy zniknięciu. Ten limit ma przy okazji miły
+efekt uboczny: naciśnięcie przycisku w trakcie usypiania podtrzymuje
+reklamowanie Kapsla w nieskończoność, więc urządzenie nigdy nie znika z
+eteru — to właśnie limit, nie zniknięcie, kończy wtedy oczekiwanie
+i uzbraja Kapsla, dokładnie tak, jak użytkownik by tego chciał, naciskając
+przycisk w tym oknie. Logika decyzyjna (czy zakończyć oczekiwanie, i dlaczego)
+żyje w osobnym, czysto testowalnym typie, `SleepWait`, bez śladu
+CoreBluetooth. Naciśnięcie przycisku w trakcie `.fallingAsleep` nic nie robi
+— nie ma jeszcze połączenia, do którego mogłoby dotrzeć — dlatego pasek menu
+dostał dla tego stanu osobny, uczciwy tekst („Kapsel zasypia — naciśnięcie
+na razie nic nie zrobi"), zamiast dzielić go z tekstem stanu „szukam"
+(„Szukam Kapsla — naciśnij przycisk, żeby go obudzić"), gdzie naciśnięcie
+faktycznie budzi urządzenie. Ikona paska menu współdzieli jednak symbol
+księżyca z „rozłączony"/„szukam" — rozróżnienie ma znaczenie dopiero po
+otwarciu menu, nie na pierwszy rzut oka. Stan `.fallingAsleep` da się opuścić
+tylko przez zakończenie oczekiwania (zniknięcie albo limit), rozpoczęcie
+nowego parowania, albo „Zapomnij Kapsel" — każde z nich jawnie anuluje
+oczekiwanie zamiast zostawiać je działające w tle.
+
+Po zakończeniu oczekiwania (zniknięciem albo limitem) aplikacja wznawia
+zawieszone `connect()` i pasek menu wraca do tekstu „Szukam Kapsla — naciśnij
+przycisk, żeby go obudzić", bo to dokładnie ten sam stan, w jakim aplikacja
+czeka na pierwsze uzbrojenie po starcie.
 
 **Rozłączenie na żądanie.** To samo rozłączenie da się wywołać ręcznie
 z paska menu — pozycja „Uśpij Kapsel", widoczna wyłącznie gdy Kapsel jest
@@ -214,12 +256,13 @@ uzbrojony (nieuzbrojony już śpi albo nigdy nie był sparowany, więc nie ma
 czego usypiać). To nie jest osobna ścieżka: `AppState.sleepDevice()` woła
 dokładnie ten sam `TrikiConnection.disconnectIdle()`, którego używa
 rozłączenie z bezczynności — różni się wyłącznie wyzwalacz (kliknięcie
-w menu zamiast upływu `idleTimeout`), nie skutek. Aplikacja rozłącza się,
+w menu zamiast upływu `idleTimeout`), nie skutek — i przechodzi przez to samo
+oczekiwanie na faktyczne zaśnięcie opisane wyżej. Aplikacja rozłącza się,
 a Kapsel zasypia w konsekwencji tego rozłączenia — to wciąż nie jest
 wysłanie żadnej komendy usypiającej, bo taka nie istnieje (patrz wyżej).
 Identyfikator przeżywa nietknięty, dokładnie jak przy rozłączeniu
 z bezczynności, więc kolejne naciśnięcie ponownie uzbraja Kapsla przez ten
-sam zawieszony `connect()`.
+sam zawieszony `connect()`, gdy tylko oczekiwanie się zakończy.
 
 **Parowanie — z wyboru, nie automatyczne.** Wcześniejsza wersja tej sekcji
 opisywała parowanie jako w pełni automatyczne: aplikacja łączyła się z
@@ -415,14 +458,26 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
 - `AppState` — rozłączenie z bezczynności (przez ten sam wstrzykiwany zegar):
   upływ 10 minut bez Celu rozłącza, obecność Celu i nadchodzące zdarzenia
   przycisku odświeżają zegar i nie dopuszczają do rozłączenia, zapamiętany
-  identyfikator przeżywa rozłączenie, a aplikacja wraca do „szukam", nie do
-  rozłączenia bez zapisanego urządzenia
+  identyfikator przeżywa rozłączenie, a aplikacja przechodzi przez
+  `.fallingAsleep` i dopiero po zakończeniu oczekiwania wraca do „szukam" —
+  nie do rozłączenia bez zapisanego urządzenia
 - `AppState.sleepDevice()` — to samo rozłączenie wywołane ręcznie: rozłącza
   i zostawia zapamiętany identyfikator nietknięty (jak wyżej, ten sam
   dowód), jest bez efektu, gdy Kapsel nie jest uzbrojony (nie ma czego
   usypiać), i jest bez efektu w trakcie parowania (wcześniej zapisany Kapsel
   może zostać w tle Uzbrojony, podczas gdy użytkownik przegląda kandydatów
-  do zmiany — nie jest to ten Kapsel, którego dotyczy przycisk w menu)
+  do zmiany — nie jest to ten Kapsel, którego dotyczy przycisk w menu);
+  osobny test przypina samą równoważność — obie ścieżki (zegar i ręczna
+  akcja) dają identyczną sekwencję `.fallingAsleep` → `.searching`, nie dwie
+  niezależnie zachowujące się kopie
+- `SleepWait` — czysta logika oczekiwania na faktyczne zaśnięcie, bez
+  CoreBluetooth i bez `@MainActor`: widzenie obserwowanego identyfikatora
+  w trakcie serii nie kończy oczekiwania, koniec serii bez widzenia kończy
+  je jako „zniknął", widzenie innego identyfikatora nic nie znaczy, upływ
+  nadrzędnego limitu kończy oczekiwanie nawet w trakcie trwającej serii
+  (i nawet gdy urządzenie jest akurat widziane — to właśnie ta ścieżka
+  odpowiada za „naciśnięcie w trakcie usypiania mimo to uzbraja"), a
+  pierwsze rozstrzygnięcie jest ostateczne — nic nie cofa go później
 - `TrikiConnection`: `CentralManaging` — wąski protokół nad pięcioma
   wywołaniami `CBCentralManager`, którego faktycznie używa ten plik —
   pozwala przypiąć testami jednostkowymi część inwariantów, które wcześniej
@@ -430,9 +485,20 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   gotowego Bluetootha, odmowę potwierdzenia bez aktywnej sesji albo bez
   wybranego kandydata, i to, że zmiana stanu Bluetootha w trakcie parowania
   restartuje skanowanie zamiast wznawiać zapisane urządzenie (a bez sesji
-  w toku wznawia je dokładnie jak dotąd). Nie obejmuje `CBPeripheral` — nie
-  da się go stworzyć poza CoreBluetooth — więc ścieżka przechowująca
-  faktyczną tożsamość wybranego kandydata zostaje testem ręcznym.
+  w toku wznawia je dokładnie jak dotąd). Ta sama warstwa pozwala przypiąć
+  orkiestrację oczekiwania na zaśnięcie wprost, bez prawdziwego
+  `CBPeripheral`: zawieszone `connect()` nie jest wznawiane, dopóki
+  urządzenie wciąż się reklamuje, jest wznawiane, gdy zniknie, nadrzędny
+  limit wznawia je mimo wszystko, rozpoczęcie parowania w trakcie
+  oczekiwania je anuluje, „Zapomnij Kapsel" w trakcie oczekiwania też, a cykl
+  zasilania Bluetootha w trakcie oczekiwania wznawia przerwaną serię zamiast
+  zawieszonego połączenia — dowód pośredni przez `retrievePeripherals`
+  (niewywołany, dopóki oczekiwanie trwa; wywołany raz, gdy się kończy), tym
+  samym sposobem, jakim testy tego pliku już radzą sobie z brakiem
+  prawdziwego `CBPeripheral`. Nie obejmuje `CBPeripheral` — nie da się go
+  stworzyć poza CoreBluetooth — więc ścieżka przechowująca faktyczną
+  tożsamość wybranego kandydata (oraz samo okablowanie
+  `didDisconnectPeripheral` → `startSleepWait()`) zostaje testem ręcznym.
 
 Test ręczny: warstwa CoreBluetooth na Kapslu (w tym część inwariantów, których
 `CentralManaging` nie obejmuje — patrz wyżej), Akcje w prawdziwym Meet oraz

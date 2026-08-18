@@ -60,14 +60,25 @@ private final class FakeDeviceConnection: DeviceConnection {
         onState?(.disconnected)
     }
     /// Mirrors the real `TrikiConnection.disconnectIdle()`: leaves
-    /// `hasSavedDevice` untouched (unlike `forget()`) and emits the same
-    /// `.disconnected` → `.searching` pair `didDisconnectPeripheral`'s
-    /// reconnect-on-advertise path produces for an ordinary drop — the saved
-    /// device survives, and the app goes back to waiting for a press to
-    /// re-arm it, not to idle-with-nothing-saved.
+    /// `hasSavedDevice` untouched (unlike `forget()`) and emits
+    /// `.fallingAsleep`, not `.searching` — a deliberate disconnect no
+    /// longer re-arms the pending connect immediately (that was the whole
+    /// defect this type's real counterpart fixes; see `SleepWait` and
+    /// `TrikiConnection`'s "Sleep wait" section). The saved device survives
+    /// either way. Tests that need to reach `.searching` call
+    /// `concludeSleepWait()` below to simulate the wait actually finishing.
     func disconnectIdle() {
         disconnectIdleCalled = true
-        onState?(.disconnected)
+        onState?(.fallingAsleep)
+    }
+
+    /// Test helper simulating the real sleep wait concluding — either the
+    /// device was confirmed gone, or the cap expired. Both land on the same
+    /// observable outcome (`resumeSearch()`'s `.searching`), which is all
+    /// `AppState` ever needs to react to; which of the two concluded it is
+    /// an internal `TrikiConnection`/`SleepWait` detail this fake has no
+    /// reason to model.
+    func concludeSleepWait() {
         onState?(.searching)
     }
     @discardableResult
@@ -868,6 +879,27 @@ private func chooseAndArmCandidate(
     #expect(state.iconName == "moon.zzz.fill")
 }
 
+/// `.fallingAsleep` deliberately shares the tray's moon icon with
+/// `.disconnected`/`.searching` — the distinction only matters once the
+/// menu is actually open, which is where `deviceDescription` (pinned below)
+/// gives it its own line. But the two must not be confusable *there*: this
+/// pins that the description text genuinely differs, unlike the icon.
+@Test @MainActor func fallingAsleepSharesTheMoonIconButNotTheMenuText() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.fallingAsleep)
+    #expect(state.iconName == "moon.zzz.fill")
+    #expect(state.deviceIcon == "moon.zzz.fill")
+    let fallingAsleepText = state.deviceDescription
+
+    connection.onState?(.searching)
+    #expect(state.iconName == "moon.zzz.fill")  // icon unchanged...
+    #expect(state.deviceDescription != fallingAsleepText)  // ...but the text is not
+}
+
 /// Rule 4. A probe that fails on both browsers (see `MeetControllerTests`
 /// for the "THROW" convention) sets `probeError` and leaves `target` `nil` —
 /// distinct from rule 5's "no call", which is the same `target == nil` but
@@ -1147,9 +1179,15 @@ private func chooseAndArmCandidate(
 
 /// The plain case: the device Arms, no Meet Target ever shows up, and
 /// `idleTimeout` passes. The saved identifier must survive (this is not
-/// `forgetDevice()`), and the app must land back on `.searching` — waiting
-/// for the next press to re-arm it — rather than on `.disconnected` with
-/// nothing saved.
+/// `forgetDevice()`), and the app must land on `.fallingAsleep` first — not
+/// `.searching` — since a deliberate disconnect no longer re-arms the
+/// pending connect until the sleep wait actually concludes (see
+/// `TrikiConnection`'s "Sleep wait" section: an immediate re-arm was the
+/// exact defect this fixes — the Kapsel keeps advertising for ~180s after a
+/// disconnect, so an immediate reconnect resumed the stream within a
+/// fraction of a second). Once the wait concludes, the app lands back on
+/// `.searching` — waiting for the next press to re-arm it — rather than on
+/// `.disconnected` with nothing saved.
 @Test @MainActor func idleTimeoutDisconnectsAfterTargetAbsentAndReturnsToWaiting() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
@@ -1171,7 +1209,11 @@ private func chooseAndArmCandidate(
     // Not forgotten: the saved identifier survives.
     #expect(!connection.forgetCalled)
     #expect(state.hasSavedDevice)
-    // Back to waiting for a press, not idle-with-nothing-saved.
+    // Falling asleep, not yet re-armed — a press right now must do nothing.
+    #expect(state.deviceState == .fallingAsleep)
+
+    // The sleep wait concludes (device confirmed gone, or the cap fired).
+    connection.concludeSleepWait()
     #expect(state.deviceState == .searching)
 }
 
@@ -1250,8 +1292,9 @@ private func chooseAndArmCandidate(
 /// but triggered by hand instead of by the clock — this is the whole point
 /// of reusing the same path: the observable outcome must be identical. The
 /// saved identifier must survive (this is not `forgetDevice()`), and the
-/// app must land back on `.searching` — waiting for the next press to
-/// re-arm it — rather than on `.disconnected` with nothing saved.
+/// app must land on `.fallingAsleep` first, then `.searching` once the
+/// sleep wait concludes — waiting for the next press to re-arm it — rather
+/// than on `.disconnected` with nothing saved.
 @Test @MainActor func sleepDeviceDisconnectsAndReturnsToWaitingWhileKeepingSavedDevice() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
@@ -1269,7 +1312,53 @@ private func chooseAndArmCandidate(
     #expect(connection.disconnectIdleCalled)
     #expect(!connection.forgetCalled)
     #expect(state.hasSavedDevice)
+    #expect(state.deviceState == .fallingAsleep)
+
+    connection.concludeSleepWait()
     #expect(state.deviceState == .searching)
+}
+
+/// Pins the equivalence itself, not just each trigger separately: both the
+/// automatic idle path and the manual "Uśpij Kapsel" action go through
+/// `disconnectIdle()` — the one production method — so both must produce
+/// the identical `.fallingAsleep` → `.searching` sequence, not two
+/// independently-behaving copies of "let it sleep". If a future change
+/// special-cased one trigger (e.g. skipped the wait for a manual sleep
+/// because "the user asked for it, no need to wait"), this is the test that
+/// would catch the two diverging.
+@Test @MainActor func automaticIdlePathAndManualSleepProduceTheIdenticalFallingAsleepSequence() {
+    let controller = MeetController(runner: FakeRunner([]))
+
+    let idleConnection = FakeDeviceConnection()
+    idleConnection.hasSavedDevice = true
+    let idleClock = FakeClock()
+    let idleState = AppState(
+        connection: idleConnection, controller: controller,
+        scriptQueue: TestQueue(), now: { idleClock.now }, browserOrder: { testBrowserOrder }
+    )
+    idleConnection.onState?(.armed)
+    idleClock.now += AppState.idleTimeout + 1
+    idleState.checkIdleDeadline()
+
+    let manualConnection = FakeDeviceConnection()
+    manualConnection.hasSavedDevice = true
+    let manualState = AppState(
+        connection: manualConnection, controller: controller,
+        scriptQueue: TestQueue(), browserOrder: { testBrowserOrder }
+    )
+    manualConnection.onState?(.armed)
+    manualState.sleepDevice()
+
+    // Identical intermediate state for both triggers.
+    #expect(idleState.deviceState == .fallingAsleep)
+    #expect(manualState.deviceState == .fallingAsleep)
+
+    idleConnection.concludeSleepWait()
+    manualConnection.concludeSleepWait()
+
+    // Identical conclusion for both triggers.
+    #expect(idleState.deviceState == .searching)
+    #expect(manualState.deviceState == .searching)
 }
 
 /// Nothing to put to sleep unless the device is actually Armed — this is

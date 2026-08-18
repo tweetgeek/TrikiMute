@@ -6,6 +6,15 @@ import TrikiMuteCore
 enum DeviceState: Equatable {
     case disconnected
     case searching
+    /// Between a deliberate disconnect (`disconnectIdle()`) and the pending
+    /// `connect()` being re-armed — see `SleepWait` and
+    /// `TrikiConnection`'s sleep-wait section. Distinct from `.searching`
+    /// (which also means "not connected, waiting for a press") because a
+    /// press during `.fallingAsleep` does nothing yet: there is no
+    /// connection for a press to reach. The menu must say so plainly rather
+    /// than reuse `.searching`'s wording, which would wrongly imply a press
+    /// right now re-arms it.
+    case fallingAsleep
     case armed
     case error(String)
 }
@@ -29,6 +38,13 @@ enum DeviceState: Equatable {
 ///   user picks one with `choose(_:)`, and only once that choice is
 ///   confirmed (by a physical button-press count, handled outside this
 ///   type) does `confirmPairing()` persist the identifier.
+///
+/// A third path exists for going the other direction: `disconnectIdle()`
+/// deliberately tears the connection down again (idle timeout or the
+/// "Uśpij Kapsel" menu action), and — unlike an ordinary loss of range —
+/// does *not* immediately re-arm the pending `connect()` afterward. See the
+/// "Sleep wait" section below for why an immediate re-arm defeated the
+/// point of disconnecting at all.
 @MainActor
 final class TrikiConnection: NSObject {
     private enum UUIDs {
@@ -81,6 +97,49 @@ final class TrikiConnection: NSObject {
         var chosen: CBPeripheral?
     }
 
+    /// Set by `disconnectIdle()` immediately before it asks `central` to
+    /// disconnect, and consumed by the very next `didDisconnectPeripheral`
+    /// callback for the current peripheral. Distinguishes a disconnect this
+    /// app asked for from any other loss of connection (out of range, a
+    /// radio hiccup): only a deliberate one enters the sleep wait below — an
+    /// ordinary drop still re-arms immediately, exactly as before this
+    /// feature existed.
+    private var deliberateDisconnectPending = false
+
+    /// Non-nil for the duration of the wait between a deliberate disconnect
+    /// and the pending `connect()` being re-armed. See `SleepWait` and the
+    /// "Sleep wait" section below.
+    private var sleepWait: SleepWait?
+    private var sleepWaitBurstEndTimer: Timer?
+    private var sleepWaitNextBurstTimer: Timer?
+    private var sleepWaitCapTimer: Timer?
+
+    /// How long one scan burst runs. The Kapsel advertised readily and
+    /// continuously throughout every pairing scan in this codebase's own
+    /// testing — nothing suggests a sparse advertising interval — so a
+    /// four-second window is generous for catching it if it's still there,
+    /// without holding the radio scanning long enough to matter for power.
+    private static let sleepWaitBurstDuration: TimeInterval = 4.0
+
+    /// Time from the start of one burst to the start of the next. A fifth
+    /// of that (4s of 20s, 20% duty cycle) is scanning; the rest is idle —
+    /// "short bursts rather than continuously," matching the design brief.
+    /// The device takes roughly three minutes to actually fall asleep
+    /// (measured: `docs/findings/2026-08-12-kapsel.md`), so checking every
+    /// 20 seconds notices the transition within a small fraction of that
+    /// window without scanning nearly as much as continuous scanning would.
+    private static let sleepWaitBurstInterval: TimeInterval = 20.0
+
+    /// Overall bound on the wait, independent of the burst rhythm above.
+    /// 270s (4.5 minutes) is comfortably past the measured ~180s — about 50%
+    /// margin for the fact that "about 180 seconds" was one measurement, not
+    /// a guaranteed constant. If the device never goes quiet (including
+    /// because a press kept it awake — see `SleepWait`'s doc on why that's a
+    /// feature, not a gap), this is what re-arms the pending connect anyway,
+    /// so this state can never be gotten stuck in forever — the same
+    /// "bound everything" posture `AppState`'s pairing timeouts already take.
+    private static let sleepWaitCap: TimeInterval = 270.0
+
     func start() {
         central = CBCentralManager(delegate: self, queue: .main)
     }
@@ -131,6 +190,7 @@ final class TrikiConnection: NSObject {
     /// `guard pairing == nil` never blocks the (already-inert) call at the
     /// end of this method.
     func forget() {
+        cancelSleepWait()
         UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
         if pairing != nil {
             central.stopScan()
@@ -149,10 +209,12 @@ final class TrikiConnection: NSObject {
     /// `forget()` clears `peripheral` *before* disconnecting specifically so
     /// `didDisconnectPeripheral`'s staleness guard suppresses the automatic
     /// reconnect; here the guard is left free to fire, so the very next
-    /// `didDisconnectPeripheral` callback re-issues the pending `connect()`
-    /// and reports `.searching` on its own — exactly the same path an
-    /// ordinary, unplanned loss of range already takes. Nothing new has to
-    /// be taught to the reconnect logic; this just asks it to run early.
+    /// `didDisconnectPeripheral` callback sees `deliberateDisconnectPending`
+    /// and enters the sleep wait below instead of re-arming immediately —
+    /// see the "Sleep wait" section for why an immediate re-arm defeated the
+    /// whole point of disconnecting (a real Kapsel keeps advertising for
+    /// about 180 seconds after this call, so an immediate `connect()`
+    /// reconnected it within a fraction of a second and resumed the stream).
     ///
     /// Called by `AppState` from two places that both boil down to "let the
     /// Kapsel sleep now": its idle policy (`checkIdleDeadline()`, no Meet
@@ -160,15 +222,16 @@ final class TrikiConnection: NSObject {
     /// action (`sleepDevice()`), triggered by hand instead of by a clock.
     /// Both call this exact same method — there is no separate "manual
     /// disconnect" path — so the two are guaranteed to behave identically;
-    /// only the trigger differs. There is no documented command that puts
+    /// only the trigger differs, and both therefore go through the same
+    /// sleep wait afterward. There is no documented command that puts
     /// the Kapsel to sleep on request — TrikiScope only ever documented the
     /// stream's start command — so disconnecting is the reliable
     /// substitute, for either trigger: with nothing connected, the device
-    /// stops transmitting and sleeps on its own, exactly as it does
-    /// whenever the app isn't running at all. Measured in the field under
-    /// the previous always-connected policy: 98%→90% overnight, roughly
-    /// twelve days of standby for hardware that should idle for weeks (see
-    /// `docs/follow-ups.md`).
+    /// stops transmitting and (once the sleep wait confirms it) sleeps on
+    /// its own, exactly as it does whenever the app isn't running at all.
+    /// Measured in the field under the previous always-connected policy:
+    /// 98%→90% overnight, roughly twelve days of standby for hardware that
+    /// should idle for weeks (see `docs/follow-ups.md`).
     ///
     /// Guards on `pairing == nil` defensively, same posture as the other
     /// methods here — `AppState` only calls this while its own pairing phase
@@ -176,6 +239,7 @@ final class TrikiConnection: NSObject {
     /// depend on a caller remembering that.
     func disconnectIdle() {
         guard pairing == nil, let peripheral else { return }
+        deliberateDisconnectPending = true
         central.cancelPeripheralConnection(peripheral)
     }
 
@@ -202,9 +266,16 @@ final class TrikiConnection: NSObject {
     /// message: `centralManagerDidUpdateState` already reports the specific
     /// cause via `onState(.error(...))` whenever the state changes, so
     /// `AppState.deviceState` already holds it by the time this refuses.
+    ///
+    /// Also leaves an in-progress sleep wait (see the "Sleep wait" section
+    /// below) — a session starting here must not be able to arrive at
+    /// `.deviceIsGone`/`.capExpired` mid-pairing and issue a stray
+    /// `resumeSearch()` underneath the candidate the user is actively
+    /// choosing between.
     @discardableResult
     func startPairing() -> Bool {
         guard central?.state == .poweredOn, pairing == nil else { return false }
+        cancelSleepWait()
         pairing = PairingSession()
         central.scanForPeripherals(withServices: nil, options: nil)
         return true
@@ -312,6 +383,158 @@ final class TrikiConnection: NSObject {
         recognizer = ButtonRecognizer()
     }
 
+    // MARK: - Sleep wait
+    //
+    // After a deliberate disconnect (`disconnectIdle()`), the Kapsel keeps
+    // advertising for a while before it actually falls asleep — measured on
+    // real hardware at roughly 180 seconds
+    // (`docs/findings/2026-08-12-kapsel.md`). Re-arming the pending
+    // `connect()` immediately reconnected it within a fraction of a second
+    // and resumed the stream, defeating the disconnect entirely — the
+    // defect this section fixes. Instead, `didDisconnectPeripheral` routes a
+    // deliberate disconnect through `startSleepWait()`, which scans in short
+    // bursts for the saved identifier specifically (not just any
+    // "triki"-named device) and only re-arms once a burst finds it gone, or
+    // once `sleepWaitCap` protects against a device that never disappears —
+    // including one kept awake by a button press during the wait, which is
+    // deliberately allowed to fall through to the cap rather than hang (see
+    // `SleepWait`'s doc).
+    //
+    // The decision logic itself lives in `SleepWait`, pure and fully unit
+    // tested without CoreBluetooth. Everything here is orchestration: real
+    // `Timer`s in production, but every step is also a directly callable,
+    // package-visible method — the same pattern `AppState`'s
+    // `checkXDeadline()` methods use — so `TrikiConnectionTests` can drive
+    // the whole wait deterministically.
+
+    /// Starts the wait for the saved device to actually stop advertising,
+    /// following a deliberate disconnect — see the section doc above.
+    ///
+    /// Reads the saved identifier fresh from `UserDefaults` rather than
+    /// reusing `peripheral`'s identifier: "match the saved identifier
+    /// specifically" is the point (another capsule advertising nearby says
+    /// nothing about this one), and reading it fresh here is also what lets
+    /// tests call this method directly without a real `CBPeripheral` — the
+    /// same trick `resumeSearch()`'s own tests already rely on.
+    ///
+    /// If nothing is saved — shouldn't happen in practice, since this is
+    /// only ever reached right after disconnecting a peripheral that came
+    /// from a saved identifier — there's nothing to wait for: report
+    /// `.disconnected` directly instead of starting a wait with no target.
+    func startSleepWait() {
+        guard let saved = UserDefaults.standard.string(forKey: Self.knownDeviceKey),
+              let uuid = UUID(uuidString: saved) else {
+            onState?(.disconnected)
+            return
+        }
+        sleepWait = SleepWait(identifier: uuid)
+        onState?(.fallingAsleep)
+        beginSleepWaitBurst()
+        sleepWaitCapTimer?.invalidate()
+        sleepWaitCapTimer = Timer.scheduledTimer(withTimeInterval: Self.sleepWaitCap, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkSleepWaitCapDeadline() }
+        }
+    }
+
+    /// Feeds one discovery into the active sleep wait, if any — a harmless
+    /// no-op otherwise (nothing being watched, or the identifier doesn't
+    /// match — see `SleepWait.sighted(_:)`). Split out from `didDiscover` so
+    /// it's callable directly with a plain identifier, no real
+    /// `CBPeripheral` required, matching this file's established seam for
+    /// what can and can't be driven from a unit test.
+    func handleSleepWaitSighting(identifier: UUID) {
+        sleepWait?.sighted(identifier)
+    }
+
+    /// Starts one scan burst: marks a fresh burst in `sleepWait`, starts
+    /// scanning, and schedules `endSleepWaitBurst()` after
+    /// `sleepWaitBurstDuration`. A no-op if no wait is active.
+    func beginSleepWaitBurst() {
+        guard sleepWait != nil else { return }
+        sleepWait?.burstStarted()
+        central.scanForPeripherals(withServices: nil, options: nil)
+        sleepWaitBurstEndTimer?.invalidate()
+        sleepWaitBurstEndTimer = Timer.scheduledTimer(withTimeInterval: Self.sleepWaitBurstDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.endSleepWaitBurst() }
+        }
+    }
+
+    /// Ends the current scan burst and judges it via `SleepWait.burstEnded()`:
+    /// if the watched identifier was never sighted, the wait concludes —
+    /// `concludeSleepWait()` stops the scan in that case, so this doesn't
+    /// stop it twice. Otherwise this stops the burst's scan itself and
+    /// schedules the next burst after the remaining gap
+    /// (`sleepWaitBurstInterval - sleepWaitBurstDuration`) — the "short
+    /// bursts rather than continuously" rhythm: scanning pauses for the gap,
+    /// not just between the end of one burst and the judgment above. A
+    /// no-op if no wait is active (already concluded, or never started).
+    func endSleepWaitBurst() {
+        guard sleepWait != nil else { return }
+        sleepWait?.burstEnded()
+        if sleepWait?.outcome != nil {
+            concludeSleepWait()
+            return
+        }
+        central.stopScan()
+        sleepWaitNextBurstTimer?.invalidate()
+        let gap = Self.sleepWaitBurstInterval - Self.sleepWaitBurstDuration
+        sleepWaitNextBurstTimer = Timer.scheduledTimer(withTimeInterval: gap, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.beginSleepWaitBurst() }
+        }
+    }
+
+    /// Evaluates whether the overall cap has passed, without waiting on the
+    /// real `sleepWaitCapTimer` — same directly-callable, deterministic
+    /// pattern `AppState`'s `checkXDeadline()` methods use for their own
+    /// one-shot bounds. Concludes the wait unconditionally once it fires,
+    /// even mid-burst (see `SleepWait.capElapsed()`). A no-op if no wait is
+    /// active.
+    func checkSleepWaitCapDeadline() {
+        guard sleepWait != nil else { return }
+        sleepWait?.capElapsed()
+        if sleepWait?.outcome != nil {
+            concludeSleepWait()
+        }
+    }
+
+    /// Tears down the sleep wait's timers and scan, then re-arms the
+    /// pending connect via the exact same `resumeSearch()` an ordinary
+    /// reconnect already uses — no separate "reconnect after sleep wait"
+    /// path to keep in sync with it. Reached once `SleepWait.outcome` is
+    /// non-nil, from either `endSleepWaitBurst()` or
+    /// `checkSleepWaitCapDeadline()`.
+    private func concludeSleepWait() {
+        sleepWaitBurstEndTimer?.invalidate()
+        sleepWaitBurstEndTimer = nil
+        sleepWaitNextBurstTimer?.invalidate()
+        sleepWaitNextBurstTimer = nil
+        sleepWaitCapTimer?.invalidate()
+        sleepWaitCapTimer = nil
+        central.stopScan()
+        sleepWait = nil
+        resumeSearch()
+    }
+
+    /// Cancels an in-progress sleep wait without concluding it — used when
+    /// something else needs to take over: starting a fresh pairing session
+    /// (`startPairing()`) or forgetting the device (`forget()`). Leaves the
+    /// state at `.disconnected`; whichever caller invoked this reports
+    /// whatever comes next on its own (a fresh scan for pairing,
+    /// `resumeSearch()` finding nothing for `forget()` since the identifier
+    /// is cleared before this runs). A no-op if no wait is active.
+    private func cancelSleepWait() {
+        guard sleepWait != nil else { return }
+        sleepWaitBurstEndTimer?.invalidate()
+        sleepWaitBurstEndTimer = nil
+        sleepWaitNextBurstTimer?.invalidate()
+        sleepWaitNextBurstTimer = nil
+        sleepWaitCapTimer?.invalidate()
+        sleepWaitCapTimer = nil
+        central.stopScan()
+        sleepWait = nil
+        onState?(.disconnected)
+    }
+
     /// Reacts to a Bluetooth power/authorization change. Split out from the
     /// `CBCentralManagerDelegate` callback (which hands it a real
     /// `CBCentralManager` the tests can't fake) so it can be exercised
@@ -331,11 +554,20 @@ final class TrikiConnection: NSObject {
     /// `onCandidates` while its own phase is `.searching` (see `didDiscover`'s
     /// comment) — so a stray rediscovery during `.connecting`/`.confirming`
     /// is inert.
+    ///
+    /// Same reasoning extends to an in-progress sleep wait: CoreBluetooth
+    /// already drops any live scan on `.poweredOff`, but `sleepWait` itself
+    /// (and its `Timer`s) survive the round trip untouched. Resuming the
+    /// interrupted burst — rather than falling through to `resumeSearch()`
+    /// — keeps a stray power cycle from re-arming the pending connect early
+    /// and reproducing the exact defect this whole feature exists to fix.
     func handleCentralStateChange(_ state: CBManagerState) {
         switch state {
         case .poweredOn:
             if pairing != nil {
                 central.scanForPeripherals(withServices: nil, options: nil)
+            } else if sleepWait != nil {
+                beginSleepWaitBurst()
             } else {
                 resumeSearch()
             }
@@ -373,14 +605,20 @@ extension TrikiConnection: CBCentralManagerDelegate {
             // only ever updates `pairing.candidates`, never `self.peripheral`
             // or `central.connect`, so a late discovery can't overwrite or
             // reconnect the chosen device.
-            guard var session = pairing else { return }
-            session.candidates[peripheral.identifier] = (
-                DeviceCandidate(id: peripheral.identifier, name: name, rssi: rssi),
-                peripheral
-            )
-            pairing = session
-            let sorted = session.candidates.values.map(\.info).sorted { $0.rssi > $1.rssi }
-            onCandidates?(sorted)
+            if var session = pairing {
+                session.candidates[peripheral.identifier] = (
+                    DeviceCandidate(id: peripheral.identifier, name: name, rssi: rssi),
+                    peripheral
+                )
+                pairing = session
+                let sorted = session.candidates.values.map(\.info).sorted { $0.rssi > $1.rssi }
+                onCandidates?(sorted)
+            }
+            // Pairing and a sleep wait never run at the same time —
+            // `startPairing()` cancels any wait first — but feeding this
+            // unconditionally costs nothing: `handleSleepWaitSighting`
+            // itself no-ops when no wait is active.
+            handleSleepWaitSighting(identifier: peripheral.identifier)
         }
     }
 
@@ -409,11 +647,21 @@ extension TrikiConnection: CBCentralManagerDelegate {
             // very device the user just asked the app to forget.
             guard peripheral.identifier == self.peripheral?.identifier else { return }
             rx = nil
-            onState?(.disconnected)
-            // The pending connect() will bring the connection back up once
-            // the device returns.
-            central.connect(peripheral, options: nil)
-            onState?(.searching)
+            if deliberateDisconnectPending {
+                // `disconnectIdle()` asked for this disconnect — don't
+                // re-arm the pending connect yet. See the "Sleep wait"
+                // section: the device stays advertising for a while after
+                // this, and reconnecting immediately would resume the
+                // stream and defeat the whole point of disconnecting.
+                deliberateDisconnectPending = false
+                startSleepWait()
+            } else {
+                onState?(.disconnected)
+                // The pending connect() will bring the connection back up once
+                // the device returns.
+                central.connect(peripheral, options: nil)
+                onState?(.searching)
+            }
         }
     }
 }

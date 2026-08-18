@@ -31,6 +31,32 @@ Zapamiętany identyfikator przeżywa rozłączenie — to nie jest „Zapomnij
 Kapsel" — a pasek menu wraca do tego samego „Szukam Kapsla — naciśnij
 przycisk, żeby go obudzić", co po zwykłym starcie aplikacji.
 
+**Zrobione: rozłączenie z bezczynności i „Uśpij Kapsel" nie usypiały
+faktycznie Kapsla.** Usterka znaleziona ręcznie, dzień po wpisie powyżej:
+obie ścieżki rozłączały się, po czym w tej samej chwili wznawiały zawieszone
+`connect()` — a Kapsel po rozłączeniu jeszcze przez chwilę się reklamuje, więc
+CoreBluetooth łączył się z powrotem w ułamku sekundy, strumień ruszał od nowa,
+a pasek menu pokazywał tylko mignięcie ikony snu. Przyczyna: niewiadoma, którą
+`docs/findings/2026-08-12-kapsel.md` wprost zostawiał otwartą — „czas do
+zaśnięcia bez połączenia nie został zmierzony" — a projekt milcząco założył,
+że rozłączenie samo w sobie wystarcza. Zmierzone dopiero teraz: **Kapsel
+reklamuje się jeszcze przez około 180 sekund po rozłączeniu**, zanim faktycznie
+zaśnie (dopisek w tym samym pliku findings). Naprawione typem `SleepWait`
+(czysta logika, bez CoreBluetooth) plus sekcją „Sleep wait" w
+`TrikiConnection`: po rozłączeniu na żądanie aplikacja skanuje krótkimi seriami
+(4 s co 20 s) w poszukiwaniu tego konkretnego, zapisanego identyfikatora i
+wznawia zawieszone `connect()` dopiero, gdy urządzenie faktycznie zniknie z
+reklam — albo gdy upłynie nadrzędny limit 270 s (4,5 min), na wypadek gdyby
+nigdy nie zniknęło. Ten limit ma przy okazji miły efekt uboczny: naciśnięcie
+przycisku w trakcie usypiania podtrzymuje reklamowanie Kapsla w
+nieskończoność, więc to właśnie limit — nie zniknięcie z eteru — kończy
+oczekiwanie i uzbraja urządzenie, dokładnie tak, jak użytkownik by tego chciał.
+Nowy stan `DeviceState.fallingAsleep` dostał własny wiersz w menu („Kapsel
+zasypia — naciśnięcie na razie nic nie zrobi"), żeby nie mylić go ze
+„Szukam Kapsla" — tam naciśnięcie faktycznie budzi urządzenie, tu jeszcze nie.
+Ikona paska menu współdzieli symbol księżyca z „rozłączony"/„szukam" —
+rozróżnienie ma znaczenie dopiero po otwarciu menu.
+
 **Zapis wybranego identyfikatora nie jest pilnowany testem.** To jedyna
 obietnica, dla której parowanie z wyboru w ogóle powstało: potwierdzenie ma
 zapisać urządzenie, które wskazałeś, a nie to, z którym aplikacja akurat jest

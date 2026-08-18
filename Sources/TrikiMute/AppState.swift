@@ -385,7 +385,13 @@ final class AppState {
     ///    stays connected and Armed in the background (see `startPairing()`'s
     ///    doc comment on "change device"), so the icon must not claim live
     ///    mic state the app has stopped watching for the duration.
-    /// 3. **Disconnected or searching** — asleep, nothing to control.
+    /// 3. **Disconnected, searching, or falling asleep** — nothing to
+    ///    control, whether that's an ordinary "not connected yet" or the
+    ///    deliberate wait between a disconnect and confirmed sleep (see
+    ///    `DeviceState.fallingAsleep`). The tray shares one glance-icon for
+    ///    all three: the distinction only matters once you actually open the
+    ///    menu, which is why `deviceDescription` (not the tray) is where
+    ///    "falling asleep" gets its own, honest line — see its doc comment.
     /// 4. **Armed, probe couldn't check** (`probeError != nil`) — distinct
     ///    from "no call": the app doesn't know, rather than confidently
     ///    reporting nothing is happening. This is why the triangle (rule 1)
@@ -419,7 +425,7 @@ final class AppState {
             // stays exhaustive without a `default:` silently swallowing a
             // future `DeviceState` case.
             return "exclamationmark.triangle.fill"
-        case .disconnected, .searching:
+        case .disconnected, .searching, .fallingAsleep:
             return "moon.zzz.fill"
         case .armed:
             if probeError != nil { return "questionmark.circle.fill" }
@@ -438,7 +444,7 @@ final class AppState {
     var deviceIcon: String {
         switch deviceState {
         case .error: return "exclamationmark.triangle.fill"
-        case .disconnected, .searching: return "moon.zzz.fill"
+        case .disconnected, .searching, .fallingAsleep: return "moon.zzz.fill"
         case .armed: return "mic"
         }
     }
@@ -478,10 +484,17 @@ final class AppState {
         }
     }
 
+    /// `.fallingAsleep` gets its own line, deliberately not reusing
+    /// `.searching`'s wording: `.searching` means a press right now wakes
+    /// and re-arms the Kapsel, but during `.fallingAsleep` there is no
+    /// connection for a press to reach yet — the text says so plainly
+    /// rather than let the two "not connected" states read as the same
+    /// thing. See `DeviceState.fallingAsleep`.
     var deviceDescription: String {
         switch deviceState {
         case .disconnected: return "Kapsel rozłączony"
         case .searching: return "Szukam Kapsla — naciśnij przycisk, żeby go obudzić"
+        case .fallingAsleep: return "Kapsel zasypia — naciśnięcie na razie nic nie zrobi"
         case .armed: return "Kapsel uzbrojony"
         case .error(let message): return message
         }
