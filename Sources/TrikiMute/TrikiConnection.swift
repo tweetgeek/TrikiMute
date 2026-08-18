@@ -223,7 +223,16 @@ final class TrikiConnection: NSObject {
     /// Known device: a pending `connect()`. No saved device: does nothing —
     /// the app waits for `startPairing()` rather than connecting to
     /// anything on its own.
+    ///
+    /// Refuses outright while a pairing session is live (`pairing != nil`).
+    /// Without this, a Bluetooth power-cycle mid-pairing could reassign
+    /// `peripheral` to the saved device while `pairing.chosen` still points
+    /// at the candidate — hijacking the session (final review, Issue 3).
+    /// `handleCentralStateChange(_:)` already avoids calling this in that
+    /// case, but the guard belongs here too: nothing about correctness
+    /// should depend on every future caller remembering to check first.
     private func resumeSearch() {
+        guard pairing == nil else { return }
         guard central?.state == .poweredOn else { return }
         guard let saved = UserDefaults.standard.string(forKey: Self.knownDeviceKey),
               let uuid = UUID(uuidString: saved),
@@ -240,19 +249,45 @@ final class TrikiConnection: NSObject {
         parser = FrameParser()
         recognizer = ButtonRecognizer()
     }
+
+    /// Reacts to a Bluetooth power/authorization change. Split out from the
+    /// `CBCentralManagerDelegate` callback so the logic itself is a plain
+    /// method that can be called directly.
+    ///
+    /// Guards `.poweredOn`: with a pairing session live, restarts the scan
+    /// instead of resuming the saved device's connection. Before this guard,
+    /// a power-cycle mid-pairing called `resumeSearch()` unconditionally,
+    /// which during `.searching` never restarted the scan CoreBluetooth had
+    /// just dropped (the candidate list would sit empty forever), and during
+    /// a chosen candidate's connection reassigned `peripheral` to the saved
+    /// device while `pairing.chosen` still pointed at the candidate —
+    /// hijacking the session onto the wrong device (final review, Issue 3).
+    /// Restarting the scan is safe regardless of how far the session has
+    /// gotten: `didDiscover` only ever updates `pairing.candidates`, never
+    /// `peripheral` or `central.connect`, and `AppState` only acts on
+    /// `onCandidates` while its own phase is `.searching` (see `didDiscover`'s
+    /// comment) — so a stray rediscovery during `.connecting`/`.confirming`
+    /// is inert.
+    func handleCentralStateChange(_ state: CBManagerState) {
+        switch state {
+        case .poweredOn:
+            if pairing != nil {
+                central.scanForPeripherals(withServices: nil, options: nil)
+            } else {
+                resumeSearch()
+            }
+        case .poweredOff: onState?(.error("Bluetooth jest wyłączony"))
+        case .unauthorized: onState?(.error("Brak zgody na Bluetooth"))
+        case .unsupported: onState?(.error("Ten Mac nie obsługuje Bluetooth LE"))
+        default: onState?(.disconnected)
+        }
+    }
 }
 
 extension TrikiConnection: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        Task { @MainActor in
-            switch central.state {
-            case .poweredOn: resumeSearch()
-            case .poweredOff: onState?(.error("Bluetooth jest wyłączony"))
-            case .unauthorized: onState?(.error("Brak zgody na Bluetooth"))
-            case .unsupported: onState?(.error("Ten Mac nie obsługuje Bluetooth LE"))
-            default: onState?(.disconnected)
-            }
-        }
+        let state = central.state
+        Task { @MainActor in handleCentralStateChange(state) }
     }
 
     nonisolated func centralManager(
