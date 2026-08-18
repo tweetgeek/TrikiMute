@@ -22,6 +22,9 @@ struct MenuBarView: View {
 
         Divider()
 
+        Button(LoginItem.wlaczone ? "✓ Uruchamiaj przy logowaniu" : "Uruchamiaj przy logowaniu") {
+            LoginItem.przelacz()
+        }
         Button("Zapomnij Kapsel") { state.zapomnijKapsel() }
         Button("Zakończ") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
