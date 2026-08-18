@@ -198,8 +198,33 @@ tej gałęzi to głównie ręcznie znalezione wyścigi w tym właśnie kodzie �
 kompilator pilnowałby dyscypliny, którą dziś trzymają wyłącznie recenzje.
 Odłożone jako osobna praca, żeby nie zmieniać założenia planu w ostatniej fali.
 
+## Potwierdzone na żywym sprzęcie
+
+Testy ręczne przeprowadzone przez użytkownika, nie przez automat:
+
+- Sterowanie Meet bez zabierania focusu; efekt weryfikowany niezależnym
+  odczytem stanu rozmowy, nie komunikatem aplikacji o samej sobie.
+- Model Uzbrojenia: pierwsze naciśnięcie budzi i nie wywołuje Akcji; kolejne
+  przełącza mikrofon; przytrzymanie wyzwala kamerę w chwili przekroczenia progu,
+  jeszcze przed puszczeniem przycisku; minuta bezruchu bez zdarzeń widmo.
+- Trzy sygnały dźwiękowe rozróżnialne, w tym komunikat o przyczynie przy
+  cofniętej zgodzie na Automatyzację.
+- Autostart po ponownym zalogowaniu, z pakietem zainstalowanym w `/Applications`.
+- Ikony w pasku menu i przy pozycjach menu.
+- Rozłączanie i parowanie z wyborem urządzenia.
+- Anulowanie zasypiania — powrót do gotowości bez czekania i bez naciskania.
+
 ## Niezweryfikowane na żywo
 
+- **Zużycie baterii Kapsla przez noc po zmianach usypiających.** To jedyny
+  sprawdzian, który rozstrzyga, czy problem zgłoszony przez użytkownika (98% →
+  90% przez dobę) faktycznie zniknął. Pierwsza próba naprawy wyglądała poprawnie
+  w kodzie i przechodziła testy, a nie działała, bo opierała się na błędnym
+  założeniu o zachowaniu firmware'u — dopiero pomiar na sprzęcie to ujawnił.
+- Zapis identyfikatora **wybranego** urządzenia przy dwóch Kapslach naraz.
+  Parowanie przetestowano, ale nie wiadomo, czy z dwoma urządzeniami w zasięgu —
+  a to jedyna ścieżka, dla której ta funkcja powstała, i żaden test jej nie
+  pokrywa (patrz wpis wyżej o `CBPeripheral`).
 - Utrata i odzyskanie zasięgu — połączenie nie zerwało się ani razu w trakcie
   testów, więc ścieżka ponownego łączenia została prześledzona w kodzie, ale nie
   uruchomiona.
