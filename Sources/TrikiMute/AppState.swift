@@ -566,9 +566,25 @@ final class AppState {
         // NSWorkspace is still queried on the main thread here (in production;
         // see the `browserOrder` doc comment for the injected-default shape).
         let browsers = browserOrder()
+        // Transitional: derives Instances from the injected name list (not a
+        // fresh `BrowserOrder.ordered()`) until Task 5 migrates AppState onto
+        // the primary path properly — using `browsers` here keeps this honoring
+        // the injected `browserOrder` closure the same way the call below it
+        // already does (see `probeHonorsInjectedBrowserOrderNotJustProductionDefault`).
+        // Deliberately *not* run through `BrowserOrdering.ordered(_:supported:)`:
+        // every fake Instance here shares `isActive: false` and `pid: 0`, so that
+        // sort would collapse straight back to `BrowserOrdering.supported`'s
+        // fixed order, discarding whatever order `browserOrder()` produced —
+        // exactly the regression `probeHonorsInjectedBrowserOrderNotJustProductionDefault`
+        // exists to catch. `pid: 0` is harmless: the fallback path this feeds
+        // addresses browsers by name, not by process.
+        let instances = browsers.compactMap { name in
+            BrowserOrdering.supported.first { $0.name == name }
+                .map { BrowserInstance(pid: 0, browser: $0, isActive: false) }
+        }
         let controller = self.controller
         scriptQueue.run(
-            background: { controller.perform(action, browsers: browsers) },
+            background: { controller.perform(action, instances: instances) },
             main: { [weak self] outcome in
                 guard let self else { return }
                 actionInFlight = false
@@ -1023,10 +1039,16 @@ final class AppState {
         probeGeneration += 1
         let generation = probeGeneration
         let browsers = browserOrder()
+        // Transitional: same derivation as `perform(_:)` above, and for the
+        // same reason — see the comment there.
+        let instances = browsers.compactMap { name in
+            BrowserOrdering.supported.first { $0.name == name }
+                .map { BrowserInstance(pid: 0, browser: $0, isActive: false) }
+        }
         let controller = self.controller
         connection.readRSSI()
         scriptQueue.run(
-            background: { controller.probe(browsers: browsers) },
+            background: { controller.probe(instances: instances) },
             main: { [weak self] outcome in
                 guard let self else { return }
                 probeInFlight = false
