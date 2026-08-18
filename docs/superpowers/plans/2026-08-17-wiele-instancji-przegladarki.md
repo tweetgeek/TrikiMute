@@ -66,8 +66,9 @@ Dzisiejsza ścieżka AppleScript zostaje jako zapas przy awarii pierwszej.
   `AppleScriptMeetBackend`
 - `Sources/TrikiMute/AppState.swift` — `browserOrder` ustępuje miejsca
   `browserInstances`
-- `Sources/TrikiMute/BrowserOrder.swift` — kasowany (zastąpiony przez
-  `RunningBrowsers`)
+- `Sources/TrikiMute/BrowserOrder.swift` — kasowany w Task 5 (zastąpiony przez
+  `RunningBrowsers`; żyje do tego czasu, bo opiera się na nim most przejściowy
+  z Task 3, dzięki któremu każdy commit na gałęzi się buduje)
 
 **Testy:**
 
@@ -867,11 +868,48 @@ public struct MeetController {
 }
 ```
 
+Dodaj też most przejściowy, żeby każdy commit na gałęzi się budował — bez
+niego `AppState` i kilkanaście miejsc w `AppStateTests` przestają się
+kompilować aż do Task 5. Task 5 kasuje go razem z resztą migracji:
+
+```swift
+extension MeetController {
+    /// Temporary bridge for call sites still written against the old shape,
+    /// removed in the task that migrates `AppState`. Exists so that every
+    /// commit on this branch builds — a broken intermediate commit would
+    /// make `git bisect` useless across exactly the range where the risky
+    /// change lands.
+    @available(*, deprecated, message: "Przejdź na MeetController(primary:fallback:)")
+    public init(runner: any ScriptRunner) {
+        self.init(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
+    }
+}
+```
+
+Stare wywołania w `AppState.swift` (`controller.probe(browsers:)` i
+`controller.perform(_:browsers:)`) nadal nie mają dopasowanej sygnatury, więc
+w tym samym kroku dopisz w `AppState.swift` przejściowe wyliczenie Instancji
+z dzisiejszej listy nazw — jedna linia w każdym z dwóch miejsc wywołania:
+
+```swift
+        let instances = BrowserOrdering.ordered(
+            BrowserOrder.ordered().compactMap { name in
+                BrowserOrdering.supported.first { $0.name == name }
+                    .map { BrowserInstance(pid: 0, browser: $0, isActive: false) }
+            },
+            supported: BrowserOrdering.supported
+        )
+```
+
+i zamień `browsers: browsers` na `instances: instances` w obu wywołaniach
+`controller`. `pid: 0` jest tu bez znaczenia — ścieżka zapasowa adresuje
+przeglądarki nazwami, a ścieżka podstawowa dochodzi dopiero w Task 4.
+
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `swift test --filter MeetControllerTests`
-Expected: PASS — 10 testów. Cel `TrikiMute` jeszcze się nie kompiluje
-(`AppState` woła stare `probe(browsers:)`) — to naprawia Task 5.
+Run: `swift test`
+Expected: PASS — cały pakiet, łącznie z niezmienionymi `AppStateTests`.
+Gałąź buduje się w całości.
 
 - [ ] **Step 5: Commit**
 
@@ -891,7 +929,10 @@ prawdziwej przeglądarki.
 **Files:**
 - Create: `Sources/TrikiMute/ScriptingBridgeBrowsers.swift`
 - Create: `Sources/TrikiMute/RunningBrowsers.swift`
-- Delete: `Sources/TrikiMute/BrowserOrder.swift`
+
+`BrowserOrder.swift` **zostaje nietknięty w tym zadaniu**, mimo że
+`RunningBrowsers` przejmuje jego rolę: opiera się na nim jeszcze most
+przejściowy z Task 3. Kasuje go Task 5, razem z resztą mostu.
 
 **Interfaces:**
 - Consumes: `BrowserAccess`, `BrowserTab`, `BrowserInstance`, `BrowserOrdering`
@@ -1146,19 +1187,17 @@ private final class ErrorTrap: NSObject, SBApplicationDelegate {
 }
 ```
 
-Skasuj `Sources/TrikiMute/BrowserOrder.swift` — `RunningBrowsers` przejmuje jego rolę.
-
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `swift test --filter RunningBrowsersTests`
-Expected: PASS — 3 testy. `swift build` musi przejść bez ostrzeżeń o
-nieużywanych importach.
+Run: `swift test`
+Expected: PASS — cały pakiet, w tym 3 nowe testy `RunningBrowsersTests`.
+Gałąź nadal buduje się w całości: most przejściowy z Task 3 wciąż stoi i wciąż
+korzysta z `BrowserOrder`, którego to zadanie nie rusza.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add Sources/TrikiMute/ScriptingBridgeBrowsers.swift Sources/TrikiMute/RunningBrowsers.swift Tests/TrikiMuteTests/RunningBrowsersTests.swift
-git rm Sources/TrikiMute/BrowserOrder.swift
 git commit -m "feat(app): adresuj przeglądarki po procesie przez ScriptingBridge"
 ```
 
@@ -1172,7 +1211,15 @@ kolejność wątków, tylko lista nazw przeglądarek ustępuje liście Instancji
 **Files:**
 - Modify: `Sources/TrikiMute/AppState.swift` (pola i inicjalizator ~linie 68-85
   i 270-284; wywołania w `perform(_:)` ~568-571 i `refreshTarget()` ~1025-1029)
+- Modify: `Sources/TrikiMuteCore/MeetController.swift` (kasowany most przejściowy
+  z Task 3 — `init(runner:)` wraz z jego `@available(*, deprecated)`)
 - Modify: `Tests/TrikiMuteTests/AppStateTests.swift`
+
+Most przejściowy z Task 3 znika w tym zadaniu w całości: skasuj rozszerzenie
+`MeetController` z `init(runner:)` oraz przejściowe wyliczanie Instancji
+z nazw, które Task 3 wstawił w `perform(_:)` i `refreshTarget()`. Po tym
+zadaniu w kodzie nie może zostać żadne odwołanie do `BrowserOrder` — ten typ
+został skasowany w Task 4.
 
 **Interfaces:**
 - Consumes: `MeetController(primary:fallback:)`, `ScanningMeetBackend(access:)`,
@@ -1439,8 +1486,10 @@ git commit -m "docs: potwierdź na sprzęcie szukanie Celu we wszystkich instanc
 
 Zadania 1 → 2 → 3 → 4 → 5 → 6, sekwencyjnie. Zadania 2 i 3 dają się pisać
 równolegle po Zadaniu 1 (dzielą tylko `MeetBackend` z Zadania 2), ale Zadanie 5
-nie skompiluje się przed ukończeniem 3 i 4, a Zadanie 6 wymaga kompletu.
+wymaga ukończenia 3 i 4, a Zadanie 6 — kompletu.
 
-Po Zadaniu 3 cel `TrikiMute` przejściowo się nie kompiluje — `AppState` woła
-metody starym kształtem. To jest oczekiwane i naprawia to Zadanie 5; nie
-próbuj tego łatać wcześniej doraźnymi zmianami w `AppState`.
+**Każdy commit na gałęzi musi się budować i mieć zielone testy.** Zadanie 3
+stawia w tym celu most przejściowy (`MeetController.init(runner:)` plus
+wyliczenie Instancji z nazw w `AppState`), Zadanie 4 zostawia go nietkniętym,
+a Zadanie 5 kasuje go w całości razem z `BrowserOrder`. Nie kasuj mostu
+wcześniej i nie zostawiaj go po Zadaniu 5.
