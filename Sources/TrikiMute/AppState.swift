@@ -73,16 +73,25 @@ final class AppState {
     /// `ProcessInfo.processInfo.systemUptime`, never `Date()` — see the note
     /// on monotonic time in `TrikiConnection`.
     private let now: () -> TimeInterval
-    /// Source of the browser polling order, injected so tests can supply a
-    /// fixed list instead of `BrowserOrder.ordered()` reading the real
-    /// `NSWorkspace.shared.frontmostApplication` — a test run with a browser
-    /// frontmost would otherwise see the list reorder out from under it and
-    /// fail for a reason that has nothing to do with what it's testing (see
-    /// `docs/follow-ups.md`). Production default is `BrowserOrder.ordered()`,
-    /// called synchronously at each call site — see the note there on why
-    /// that has to happen on the main thread, before dispatching to
-    /// `scriptQueue`.
-    private let browserOrder: () -> [String]
+    /// Source of the Instances to search, injected so tests can supply a
+    /// fixed list instead of `RunningBrowsers.instances()` reading the real
+    /// `NSWorkspace` — a test run with a browser frontmost would otherwise see
+    /// the list reorder out from under it and fail for a reason that has
+    /// nothing to do with what it's testing (see `docs/follow-ups.md`).
+    /// Production default is `RunningBrowsers.instances()`, called
+    /// synchronously at each call site, on the main thread, before dispatching
+    /// to `scriptQueue`.
+    ///
+    /// The closure type itself carries `@MainActor`, not just the call sites
+    /// that happen to invoke it there: parameter default expressions don't
+    /// inherit the initializer's isolation (the same quirk the `connection`
+    /// parameter's comment documents below), so the default-value closure
+    /// literal — `{ RunningBrowsers.instances() }` — has to be constructible
+    /// outside `init`'s `@MainActor` context. Annotating the type is what
+    /// makes that possible while still having the compiler enforce that the
+    /// closure is only ever *called* on the main actor, a rule that
+    /// previously lived only in the comment above.
+    private let browserInstances: @MainActor () -> [BrowserInstance]
     private var probeTimer: Timer?
     private var probeInFlight = false
     /// Non-nil for the duration of `.confirming`. Owns the press count and
@@ -255,7 +264,7 @@ final class AppState {
     /// the probe and Actions don't step on each other. State is only mutated
     /// after returning to the main thread.
     ///
-    /// `connection`, `controller`, `scriptQueue`, `now`, and `browserOrder`
+    /// `connection`, `controller`, `scriptQueue`, `now`, and `browserInstances`
     /// are initializer parameters solely so that tests can substitute doubles
     /// for real CoreBluetooth, AppleScript, background threads, wall-clock
     /// time, and `NSWorkspace`. The defaults reproduce the existing
@@ -269,19 +278,22 @@ final class AppState {
     /// parameter list.
     init(
         connection: (any DeviceConnection)? = nil,
-        controller: MeetController = MeetController(runner: AppleScriptRunner()),
+        controller: MeetController = MeetController(
+            primary: ScanningMeetBackend(access: ScriptingBridgeBrowsers()),
+            fallback: AppleScriptMeetBackend(runner: AppleScriptRunner())
+        ),
         scriptQueue: any ScriptQueue = DefaultScriptQueue(
             backgroundQueue: DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
         ),
         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-        browserOrder: @escaping () -> [String] = { BrowserOrder.ordered() }
+        browserInstances: @escaping @MainActor () -> [BrowserInstance] = { RunningBrowsers.instances() }
     ) {
         let connection = connection ?? TrikiConnection()
         self.connection = connection
         self.controller = controller
         self.scriptQueue = scriptQueue
         self.now = now
-        self.browserOrder = browserOrder
+        self.browserInstances = browserInstances
         connection.onState = { [weak self] state in
             guard let self else { return }
             deviceState = state
@@ -564,11 +576,11 @@ final class AppState {
         }
         actionInFlight = true
         // NSWorkspace is still queried on the main thread here (in production;
-        // see the `browserOrder` doc comment for the injected-default shape).
-        let browsers = browserOrder()
+        // see the `browserInstances` doc comment for the injected-default shape).
+        let instances = browserInstances()
         let controller = self.controller
         scriptQueue.run(
-            background: { controller.perform(action, browsers: browsers) },
+            background: { controller.perform(action, instances: instances) },
             main: { [weak self] outcome in
                 guard let self else { return }
                 actionInFlight = false
@@ -1022,11 +1034,11 @@ final class AppState {
         probePending = false
         probeGeneration += 1
         let generation = probeGeneration
-        let browsers = browserOrder()
+        let instances = browserInstances()
         let controller = self.controller
         connection.readRSSI()
         scriptQueue.run(
-            background: { controller.probe(browsers: browsers) },
+            background: { controller.probe(instances: instances) },
             main: { [weak self] outcome in
                 guard let self else { return }
                 probeInFlight = false

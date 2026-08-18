@@ -39,6 +39,13 @@ poprawnie i nigdy nie pojawia się we własnej pozycji w Ustawieniach systemowyc
 
 ## Jak to działa
 
+**Wiele instancji przeglądarki.** Aplikacja szuka rozmowy w każdym działającym
+procesie Chrome i Brave z osobna, a nie w „tej jednej", którą wybrałby system —
+więc druga instancja, uruchomiona przez narzędzie automatyzujące albo osobnym
+poleceniem z własnym `--user-data-dir`, nie przesłania Ci rozmowy. Kolejność
+szukania: przeglądarka na wierzchu, potem Chrome przed Brave, potem starszy
+proces. Szczegóły decyzji w `docs/adr/0003-scriptingbridge-zamiast-nazwy-aplikacji.md`.
+
 **Parowanie.** Przy pierwszym uruchomieniu (albo żeby zmienić urządzenie)
 klikasz pozycję parowania w pasku menu — otwiera się osobne, małe okno, które
 zostaje na ekranie przez cały przebieg (menu samo w sobie znika po każdym

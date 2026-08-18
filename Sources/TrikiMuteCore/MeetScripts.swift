@@ -12,6 +12,10 @@ public enum MeetScripts {
     /// drift out of sync with a change of interface language.
     public static let buttonSelector = "[data-is-muted]"
 
+    /// The address that marks a tab as a call. Lives here with the selectors,
+    /// because it's the same kind of knowledge about Meet's surface.
+    public static let meetHost = "meet.google.com"
+
     /// Button positions in the `querySelectorAll` result. Values confirmed
     /// by the Task 1 spike (`docs/findings/2026-08-12-meet-dom.md`).
     public static let micIndex = 0
@@ -71,7 +75,7 @@ public enum MeetScripts {
                 if it is not running then return "NONE"
                 repeat with w in windows
                     repeat with t in tabs of w
-                        if URL of t contains "meet.google.com" then
+                        if URL of t contains "\(meetHost)" then
                             set result to execute t javascript "\(escaped(javascript))"
                             if result is not "NONE" then return result
                         end if

@@ -39,56 +39,58 @@ public enum ProbeOutcome: Equatable, Sendable {
 }
 
 /// Controls the microphone and camera in the Target.
+///
+/// A facade over two backends. The primary one addresses Instances by process
+/// and is the reason this type stopped talking to AppleScript directly; the
+/// fallback is the old name-addressed path, kept for a failure only the primary
+/// can have (see ADR-0003).
 public struct MeetController {
-    private let runner: ScriptRunner
+    private let primary: any MeetBackend
+    private let fallback: (any MeetBackend)?
 
-    public init(runner: ScriptRunner) {
-        self.runner = runner
+    public init(primary: any MeetBackend, fallback: (any MeetBackend)? = nil) {
+        self.primary = primary
+        self.fallback = fallback
     }
 
-    /// Looks for the Target in the given browsers, in order. Returns the
-    /// state of the first tab that has a full set of buttons; if none has a
-    /// Target, distinguishes "no call anywhere" from "couldn't check".
-    public func probe(browsers: [String]) -> ProbeOutcome {
-        var lastError: String?
-        for browser in browsers {
-            let script = MeetScripts.appleScript(
-                browser: browser,
-                javascript: MeetScripts.probeJS()
-            )
-            do {
-                let response = try runner.run(script)
-                // The "NONE" sentinel is four characters long, so it's
-                // naturally excluded here.
-                guard response.count == 2 else { continue }
-                let chars = Array(response)
-                return .target(ProbeResult(
-                    browser: browser,
-                    micMuted: chars[0] == "1",
-                    cameraOff: chars[1] == "1"
-                ))
-            } catch {
-                lastError = String(describing: error)
-            }
-        }
-        if let lastError { return .failed(lastError) }
-        return .noTarget
+    /// Looks for the Target across the given Instances.
+    ///
+    /// The fallback runs on `.failed` and on nothing else. `.noTarget` means the
+    /// primary path already searched every Instance and found no call — the
+    /// fallback searches a subset of the same browsers, so it cannot find
+    /// anything the primary missed, and asking it would add an Apple Event per
+    /// browser to every probe tick in the app's most common state.
+    ///
+    /// On the way out, the fallback's `.noTarget` is discarded in favor of the
+    /// primary's `.failed`. The two `.noTarget`s are not the same claim: from
+    /// the primary it means "I searched every Instance and found no call";
+    /// from the fallback, addressed by name, it means "I searched whichever
+    /// Instance the system happened to route the Apple Event to" — a strictly
+    /// weaker claim, and one already contradicted by the primary having been
+    /// unable to finish. Only a positive answer from the fallback — a Target
+    /// found — is trusted; anything else surfaces the primary's failure.
+    public func probe(instances: [BrowserInstance]) -> ProbeOutcome {
+        let outcome = primary.probe(instances: instances)
+        guard case .failed = outcome, let fallback else { return outcome }
+        let second = fallback.probe(instances: instances)
+        if case .noTarget = second { return outcome }
+        return second
     }
 
-    /// Performs an Action in the first browser that has a Target.
-    public func perform(_ action: MeetAction, browsers: [String]) -> ActionOutcome {
-        var lastError: String?
-        for browser in browsers {
-            do {
-                let response = try runner.run(
-                    MeetScripts.appleScript(browser: browser, javascript: MeetScripts.toggleJS(action))
-                )
-                if response == "OK" { return .performed }
-            } catch {
-                lastError = String(describing: error)
-            }
-        }
-        if let lastError { return .failed(lastError) }
-        return .noTarget
+    /// Performs an Action in the first Instance that has a Target. Falls back
+    /// under the same rule as `probe(instances:)`, and with the same caveat —
+    /// the fallback cannot choose an Instance, so if a call is running in more
+    /// than one, it may click in the wrong one (see `docs/follow-ups.md`).
+    ///
+    /// Same exit rule as `probe(instances:)`, and for the same reason: the
+    /// fallback's `.noTarget` is a weaker claim than the primary's `.failed`,
+    /// so it never overwrites it. Only `.performed` (or a fallback `.failed`,
+    /// which replaces one failure with another) is trusted from the fallback.
+    public func perform(_ action: MeetAction, instances: [BrowserInstance]) -> ActionOutcome {
+        let outcome = primary.perform(action, instances: instances)
+        guard case .failed = outcome, let fallback else { return outcome }
+        let second = fallback.perform(action, instances: instances)
+        if case .noTarget = second { return outcome }
+        return second
     }
 }
