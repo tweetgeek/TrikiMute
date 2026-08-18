@@ -87,12 +87,15 @@ jak ten wpis przewidywał. Uzasadnienie odłożenia było błędne: „uruchamia
 z terminala są bezpieczne, bo na wierzchu jest terminal" to założenie o
 układzie okien akurat tego dewelopera, a nie własność kodu — nic w kodzie
 nie gwarantowało, że terminal będzie na wierzchu. Naprawione przez wstrzyknięcie
-kolejności przeglądarek jako `browserOrder: () -> [String]`, tym samym wzorcem
-co pozostali współpracownicy `AppState` (`connection`, `controller`,
-`scriptQueue`, `now`) — domyślnie `{ BrowserOrder.ordered() }`, więc
-produkcyjne miejsce wywołania (`AppState()` w `TrikiMuteApp.swift`) się nie
-zmieniło, a każdy `AppState` w `AppStateTests.swift` dostaje teraz stałą
-`testBrowserOrder`.
+kolejności przeglądarek tym samym wzorcem co pozostali współpracownicy
+`AppState` (`connection`, `controller`, `scriptQueue`, `now`), więc produkcyjne
+miejsce wywołania (`AppState()` w `TrikiMuteApp.swift`) się nie zmieniło, a każdy
+`AppState` w `AppStateTests.swift` dostaje stałą listę. Przy przejściu na
+adresowanie po procesie (ADR-0003) wstrzykiwana zależność zmieniła kształt
+z listy nazw na `browserInstances: @MainActor () -> [BrowserInstance]`,
+domyślnie `{ RunningBrowsers.instances() }` — sama zasada została ta sama,
+a adnotacja `@MainActor` na typie domknięcia oddaje kompilatorowi pilnowanie
+reguły, która wcześniej żyła wyłącznie w komentarzu.
 
 **Sonda odpytuje dwie przeglądarki co 3 sekundy bez końca.** Gdy Celu nie ma,
 ikona i tak nie ma czego pokazywać, więc rzadszy takt nic nie kosztuje. 3 s przy
@@ -241,6 +244,37 @@ Testy ręczne przeprowadzone przez użytkownika, nie przez automat:
   czytelnie klikalne, nic nie urywa się przy zmniejszaniu okna.
 
 ## Niezweryfikowane na żywo
+
+- **Cała ścieżka ScriptingBridge — nie uruchomiona ani razu na prawdziwej
+  przeglądarce.** To jedyna warstwa tej zmiany bez pokrycia testami: wiązanie
+  z API opiera się na `unsafeBitCast` na protokołach `@objc`, więc literówka
+  w nazwie selektora nie jest błędem kompilacji, tylko cichą awarią w czasie
+  działania. 169 zielonych testów nie mówi o niej nic. Test odłożony świadomie,
+  decyzją użytkownika, przy pełnej świadomości ryzyka.
+
+  Co trzeba sprawdzić, gdy przyjdzie na to pora:
+
+  1. Rozmowa Meet w zwykłej przeglądarce plus druga instancja uruchomiona przez
+     `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir=/tmp/druga about:blank`.
+     Menu ma pokazywać stan mikrofonu, nie „Brak Celu" — a przed tą zmianą
+     pokazywało „Brak Celu", więc warto odtworzyć najpierw samą usterkę, żeby
+     mieć pewność, że test sprawdza to, co ma sprawdzać.
+  2. Naciśnięcie Kapsla wycisza **tę** rozmowę, nie inną.
+  3. Cofnięta zgoda na Automatyzację (Ustawienia systemowe → Prywatność
+     i ochrona → Automatyzacja) daje „Nie mogę sprawdzić Celu" i znak zapytania
+     w pasku menu — **nie** „Brak Celu". To jest sprawdzian dla `ErrorTrap`:
+     ScriptingBridge domyślnie połyka błędy Apple Events, a spike pokazał, że
+     przy nieistniejącym procesie delegat nie dostaje nawet wywołania.
+  4. Czy którekolwiek okno Chrome zwraca `nil` na pytanie o karty (okno
+     DevTools, panel). Od tego zależy, czy warunkowy `throw` przy wymiecionej
+     instancji nie daje fałszywych awarii — patrz niżej.
+
+- **Skrajność w warunkowym `throw` przy czytaniu kart.** Gdyby jedno okno
+  odpowiedziało zerem kart, a inne nie odpowiedziało wcale, `tabs(in:)` rzuci
+  wyjątek, choć jedno okno technicznie odpowiedziało. Wedle semantyki Chrome
+  nieosiągalne — okno przeglądarki ma zawsze co najmniej jedną kartę, a okna
+  nieczytelne dla ScriptingBridge odpowiadają `nil`, nie pustą listą — ale to
+  wniosek z lektury, nie z pomiaru.
 
 - **Zużycie baterii Kapsla przez noc po zmianach usypiających.** To jedyny
   sprawdzian, który rozstrzyga, czy problem zgłoszony przez użytkownika (98% →
