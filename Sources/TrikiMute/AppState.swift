@@ -21,6 +21,13 @@ final class AppState {
     private let controller = MeetController(runner: AppleScriptRunner())
     private var sonda: Timer?
     private var sondaWToku = false
+    /// Akcja w locie. Naciśnięcia, które przychodzą, zanim poprzednia Akcja
+    /// wróci z kolejki, są porzucane, a nie kolejkowane — nieaktualne
+    /// przełączenie, wykonane z opóźnieniem po serii naciśnięć, jest gorsze
+    /// niż jego brak. Realny wyzwalacz: pierwsze uruchomienie, gdzie
+    /// zablokowane okno zgody na Automation zbiera naciśnięcia w kolejce,
+    /// a po kliknięciu „Zezwól" wszystkie odpalają się hurtem.
+    private var akcjaWToku = false
     /// Sonda zgłoszona w trakcie innej. Nie ginie — ruszy zaraz po niej.
     private var sondaZalegla = false
     /// Numer pokolenia sondy. Wynik ze starego pokolenia jest ignorowany:
@@ -89,6 +96,16 @@ final class AppState {
     }
 
     func wykonaj(_ action: MeetAction) {
+        guard !akcjaWToku else {
+            // Cisza tutaj odtworzyłaby dokładnie tę klasę defektu, którą ta
+            // gałąź eliminowała: naciśnięcie ma być słyszalnie potwierdzone,
+            // nawet gdy zostaje porzucone.
+            let wynik = ActionOutcome.failed("poprzednia Akcja jeszcze trwa, pominięto")
+            Feedback.zagraj(wynik)
+            ostatniaAkcja = opis(action, wynik)
+            return
+        }
+        akcjaWToku = true
         // NSWorkspace pytamy jeszcze na głównym wątku.
         let przegladarki = BrowserOrder.uporzadkowane()
         let controller = self.controller
@@ -96,6 +113,7 @@ final class AppState {
             let wynik = controller.perform(action, browsers: przegladarki)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                akcjaWToku = false
                 Feedback.zagraj(wynik)
                 ostatniaAkcja = opis(action, wynik)
                 // Meet aktualizuje DOM asynchronicznie po kliknięciu — odczyt

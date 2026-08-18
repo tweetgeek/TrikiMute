@@ -143,3 +143,11 @@ private final class ThrowingRunner: ScriptRunner {
     #expect(s.contains("if it is not running"))
     #expect(s.contains("meet.google.com"))
 }
+
+@Test func appleScriptOgraniczaCzasWykonaniaTimeoutem() {
+    // Bez tego zawieszona przeglądarka blokowałaby kolejkę skryptów aż do
+    // domyślnego, 60-sekundowego limitu AppleScriptu.
+    let s = MeetScripts.appleScript(browser: "Google Chrome", javascript: "1")
+    #expect(s.contains("with timeout of 5 seconds"))
+    #expect(s.contains("end timeout"))
+}

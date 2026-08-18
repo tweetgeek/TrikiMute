@@ -58,18 +58,24 @@ public enum MeetScripts {
     /// Oba wstawiane teksty są escapowane, żeby funkcja była poprawna dla
     /// dowolnego wejścia, a nie tylko dla generatorów trzymających się
     /// apostrofów.
+    /// Przeglądarka zawieszona na `execute … javascript` blokowałaby kolejkę
+    /// skryptów aż do domyślnego, 60-sekundowego limitu AppleScriptu. Ten
+    /// timeout sprowadza to do 5 sekund, więc zawieszona przeglądarka
+    /// ujawnia się jako `.failed` (i słyszalne `Basso`) zamiast cichego zwisu.
     public static func appleScript(browser: String, javascript: String) -> String {
         """
         tell application "\(escapuj(browser))"
-            if it is not running then return "NONE"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    if URL of t contains "meet.google.com" then
-                        set wynik to execute t javascript "\(escapuj(javascript))"
-                        if wynik is not "NONE" then return wynik
-                    end if
+            with timeout of 5 seconds
+                if it is not running then return "NONE"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if URL of t contains "meet.google.com" then
+                            set wynik to execute t javascript "\(escapuj(javascript))"
+                            if wynik is not "NONE" then return wynik
+                        end if
+                    end repeat
                 end repeat
-            end repeat
+            end timeout
         end tell
         return "NONE"
         """
