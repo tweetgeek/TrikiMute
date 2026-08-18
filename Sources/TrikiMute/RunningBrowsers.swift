@@ -3,13 +3,12 @@ import TrikiMuteCore
 
 /// Finds the Instances of supported browsers that are running right now.
 ///
-/// Replaces `BrowserOrder`: the app no longer asks "which browsers do we know
-/// about, and which is frontmost", but "which processes are there, and in what
-/// order should they be searched".
+/// The app no longer asks "which browsers do we know about, and which is
+/// frontmost", but "which processes are there, and in what order should they
+/// be searched".
 enum RunningBrowsers {
-    /// Reads `NSWorkspace`. Call on the main thread — the same rule the old
-    /// `BrowserOrder.ordered()` followed, and for the same reason: `AppState`
-    /// resolves this before handing work to the background script queue.
+    /// Reads `NSWorkspace`. Call on the main thread — `AppState` resolves this
+    /// before handing work to the background script queue.
     @MainActor
     static func instances() -> [BrowserInstance] {
         instances(from: NSWorkspace.shared.runningApplications.map {

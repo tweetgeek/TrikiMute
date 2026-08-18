@@ -76,15 +76,3 @@ public struct MeetController {
         return fallback.perform(action, instances: instances)
     }
 }
-
-extension MeetController {
-    /// Temporary bridge for call sites still written against the old shape,
-    /// removed in the task that migrates `AppState`. Exists so that every
-    /// commit on this branch builds — a broken intermediate commit would
-    /// make `git bisect` useless across exactly the range where the risky
-    /// change lands.
-    @available(*, deprecated, message: "Przejdź na MeetController(primary:fallback:)")
-    public init(runner: any ScriptRunner) {
-        self.init(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
-    }
-}

@@ -3,15 +3,26 @@ import Testing
 import TrikiMuteCore
 @testable import TrikiMute
 
-/// Fixed stand-in for `BrowserOrder.ordered()`, passed to every `AppState`
+/// Fixed stand-in for `RunningBrowsers.instances()`, passed to every `AppState`
 /// built in this file. Without it, `AppState` would fall back to its
-/// production default and read the real `NSWorkspace.shared.frontmostApplication`
-/// — whichever browser happens to be frontmost while the suite runs would
-/// then reorder this list out from under the tests, and any assertion that
-/// depends on which browser answered first (e.g. `ProbeResult.browser`)
-/// would fail or pass for a reason that has nothing to do with what it's
-/// testing. See `docs/follow-ups.md`.
-private let testBrowserOrder = ["Google Chrome", "Brave Browser"]
+/// production default and read the real `NSWorkspace` — whichever browsers
+/// happen to be running while the suite runs would then reorder this list
+/// out from under the tests, and any assertion that depends on which
+/// browser answered first (e.g. `ProbeResult.browser`) would fail or pass
+/// for a reason that has nothing to do with what it's testing. See
+/// `docs/follow-ups.md`.
+private let testBrowserInstances = [
+    BrowserInstance(
+        pid: 1450,
+        browser: SupportedBrowser(bundleID: "com.google.Chrome", name: "Google Chrome"),
+        isActive: false
+    ),
+    BrowserInstance(
+        pid: 1445,
+        browser: SupportedBrowser(bundleID: "com.brave.Browser", name: "Brave Browser"),
+        isActive: false
+    ),
+]
 
 /// Fake `TrikiConnection`: lets tests call `onState`/`onEvent` directly,
 /// without real CoreBluetooth.
@@ -175,9 +186,9 @@ private final class TestQueue: ScriptQueue {
     // If this result landed on screen, target would stop being nil — that's
     // exactly what we check below.
     let runner = FakeRunner(["10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     #expect(queue.runCount == 1)
@@ -195,37 +206,37 @@ private final class TestQueue: ScriptQueue {
 // MARK: - Injected browser order
 
 /// Mutation check for `docs/follow-ups.md`'s "Zrobione" entry on this exact
-/// point: `testBrowserOrder` above is identical to `BrowserOrder.all`, which
-/// is also what `BrowserOrder.ordered()` falls back to whenever the
-/// frontmost application isn't one of the listed browsers — so every test in
-/// this file that passes `testBrowserOrder` would keep passing even if a
-/// call site were reverted to call `BrowserOrder.ordered()` directly and the
-/// injected `browserOrder` parameter went unused, in any environment where a
-/// browser doesn't happen to be forcibly frontmost. This test uses a
-/// *reversed* order instead — genuinely different from `BrowserOrder.all` —
-/// and asserts on `ProbeResult.browser`, a value that can only come out
-/// reversed if `refreshTarget()` is actually calling the injected closure
-/// rather than reading `NSWorkspace` on its own.
+/// point: `testBrowserInstances` above is identical to `BrowserOrdering.supported`,
+/// which is also what `RunningBrowsers.instances()` falls back to whenever no
+/// listed browser is running — so every test in this file that passes
+/// `testBrowserInstances` would keep passing even if a call site were
+/// reverted to call `RunningBrowsers.instances()` directly and the injected
+/// `browserInstances` parameter went unused, in any environment without a
+/// browser forcibly running. This test uses a *reversed* list instead —
+/// genuinely different from `BrowserOrdering.supported` — and asserts on
+/// `ProbeResult.browser`, a value that can only come out reversed if
+/// `refreshTarget()` is actually calling the injected closure rather than
+/// reading `NSWorkspace` on its own.
 ///
 /// Verified the honest way (manual, not automated): temporarily changed
-/// `refreshTarget()`'s `let browsers = browserOrder()` to
-/// `let browsers = BrowserOrder.ordered()` — this test failed (`state.target?.browser`
+/// `refreshTarget()`'s `let instances = browserInstances()` to
+/// `let instances = RunningBrowsers.instances()` — this test failed (`state.target?.browser`
 /// came back `"Google Chrome"`, the production default's first entry,
 /// instead of `"Brave Browser"`), while every other test in this file kept
 /// passing. Reverted immediately after confirming the failure.
 @Test @MainActor func probeHonorsInjectedBrowserOrderNotJustProductionDefault() {
     let connection = FakeDeviceConnection()
-    let reversedOrder = Array(testBrowserOrder.reversed())
-    #expect(reversedOrder != BrowserOrder.all)
+    let reversedInstances = Array(testBrowserInstances.reversed())
+    #expect(reversedInstances.map(\.browser) != BrowserOrdering.supported)
 
     // A single length-2 response is consumed by whichever browser is tried
     // first. If the reversed order is genuinely honored, that's "Brave
-    // Browser" — the *second* entry in both `BrowserOrder.all` and
-    // `testBrowserOrder`, first only here.
+    // Browser" — the *second* entry in both `BrowserOrdering.supported` and
+    // `testBrowserInstances`, first only here.
     let runner = FakeRunner(["10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { reversedOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { reversedInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -238,9 +249,9 @@ private final class TestQueue: ScriptQueue {
 @Test @MainActor func secondProbeQueuesAsPendingNotParallel() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["10", "01"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     #expect(queue.runCount == 1)
@@ -264,9 +275,9 @@ private final class TestQueue: ScriptQueue {
 @Test @MainActor func refreshRequestedAfterDisconnectDoesNotStartProbe() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -288,9 +299,9 @@ private final class TestQueue: ScriptQueue {
     // Consumption order: the first probe fails on both browsers (2 entries),
     // then a successful Action (1 entry), then a successful second probe (1 entry).
     let runner = FakeRunner(["THROW", "THROW", "OK", "10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -310,9 +321,9 @@ private final class TestQueue: ScriptQueue {
 @Test @MainActor func actionDuringAnotherIsSkippedNotQueued() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["OK"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.perform(.microphone)
     state.perform(.camera)
@@ -359,10 +370,10 @@ private func chooseAndArmCandidate(
     // If perform() ran, this response would be consumed — proof by
     // contradiction that queue.runCount == 0 below means it didn't.
     let runner = FakeRunner(["OK"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
 
@@ -379,10 +390,10 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func fullPressCountConfirmsAndPersists() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
 
@@ -411,10 +422,10 @@ private func chooseAndArmCandidate(
 /// so these two causes are no longer indistinguishable to the user.
 @Test @MainActor func pressTimeoutFailsWithoutPersisting() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -435,9 +446,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func cancelDuringPairingLeavesSavedDeviceUntouched() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -460,9 +471,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func pressOutsidePairingStillTogglesMic() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["OK"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onEvent?(.press)
 
@@ -479,10 +490,10 @@ private func chooseAndArmCandidate(
 /// the press-timeout message (fix round 1, Finding 1).
 @Test @MainActor func candidateThatNeverArmsFailsWithConnectSpecificMessage() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -513,10 +524,10 @@ private func chooseAndArmCandidate(
 /// whatever was left over from a single shared deadline.
 @Test @MainActor func candidateThatArmsLateStillGetsFullPressWindow() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -556,9 +567,9 @@ private func chooseAndArmCandidate(
 /// actually happened.
 @Test @MainActor func dropMidConfirmationReturnsToConnectingInsteadOfStaleCountdown() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -587,9 +598,9 @@ private func chooseAndArmCandidate(
 /// `true` exactly when it should.
 @Test @MainActor func dropMidConfirmationResetsProgressButKeepsTheOriginalRequiredCount() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming(_, let required, let resetBeforeDrop) = state.pairing else {
@@ -635,9 +646,9 @@ private func chooseAndArmCandidate(
 /// implementation" as a compiled-language test can demonstrate.
 @Test @MainActor func repeatedDropsEventuallyFailInsteadOfFlappingForever() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -687,9 +698,9 @@ private func chooseAndArmCandidate(
 /// instead of announcing a search.
 @Test @MainActor func startPairingFailureNamesCauseInsteadOfAnnouncingSearch() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.error("Bluetooth jest wyłączony"))
     connection.startPairingResult = false
@@ -710,9 +721,9 @@ private func chooseAndArmCandidate(
 /// (first-time wording) in that case instead of "Zmień Kapsla".
 @Test @MainActor func hasSavedDeviceReflectsConnectionRegardlessOfDeviceState() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.hasSavedDevice = true
     connection.onState?(.error("Bluetooth jest wyłączony"))
@@ -722,9 +733,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func startPairingRefusedWhileSessionAlreadyLive() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     #expect(connection.startPairingCallCount == 1)
@@ -745,10 +756,10 @@ private func chooseAndArmCandidate(
 /// the user instead of `AppState` announcing confirmation unconditionally.
 @Test @MainActor func confirmationRefusalSurfacesAsFailedInsteadOfSilentSuccess() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming(_, let required, _) = state.pairing else {
@@ -775,10 +786,10 @@ private func chooseAndArmCandidate(
 /// and `.confirming` already were.
 @Test @MainActor func searchTimeoutFailsAndStopsScanning() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     #expect(state.pairing == .searching([]))
@@ -805,9 +816,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func iconIsDistinctWhilePairingEvenIfASavedDeviceStaysArmed() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["00"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -827,9 +838,9 @@ private func chooseAndArmCandidate(
 /// the call state, both pinned separately below.
 @Test @MainActor func iconShowsTriangleWhenDeviceHasError() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.error("Bluetooth jest wyłączony"))
 
@@ -842,9 +853,9 @@ private func chooseAndArmCandidate(
 /// non-`.inactive`, but easy to mistake for "pairing is over").
 @Test @MainActor func iconShowsRadiowavesWhilePairingInProgress() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
 
@@ -858,10 +869,10 @@ private func chooseAndArmCandidate(
 /// the pairing UI, not a fallback to whatever `deviceState` happens to read.
 @Test @MainActor func iconShowsRadiowavesWhilePairingHasFailed() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     clock.now += AppState.searchTimeout + 1
@@ -880,9 +891,9 @@ private func chooseAndArmCandidate(
 /// reports for a saved device that dropped and hasn't come back yet.
 @Test @MainActor func iconShowsMoonWhenDisconnectedOrSearching() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     #expect(state.deviceState == .disconnected)
     #expect(state.iconName == "moon.zzz.fill")
@@ -898,9 +909,9 @@ private func chooseAndArmCandidate(
 /// pins that the description text genuinely differs, unlike the icon.
 @Test @MainActor func fallingAsleepSharesTheMoonIconButNotTheMenuText() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.fallingAsleep)
     #expect(state.iconName == "moon.zzz.fill")
@@ -919,9 +930,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func iconShowsQuestionMarkWhenArmedButProbeCouldNotCheck() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["THROW", "THROW"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -937,9 +948,9 @@ private func chooseAndArmCandidate(
 /// rule 6 below.
 @Test @MainActor func iconShowsOutlineMicWhenArmedWithNoCall() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -955,9 +966,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func iconShowsFilledMicWhenCallHasLiveMicrophone() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["00"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -970,9 +981,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func iconShowsSlashMicWhenCallHasMutedMicrophone() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -990,9 +1001,9 @@ private func chooseAndArmCandidate(
 /// invisible behind the pairing icon for as long as a session stayed open.
 @Test @MainActor func iconPrefersDeviceErrorOverPairingInProgress() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     state.startPairing()
@@ -1017,9 +1028,9 @@ private func chooseAndArmCandidate(
     // First probe succeeds (mic live) — consumes one response on the first
     // browser. Second probe fails on both browsers.
     let runner = FakeRunner(["00", "THROW", "THROW"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()
@@ -1040,9 +1051,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func pressDuringConnectingDoesNotReachMeet() {
     let connection = FakeDeviceConnection()
     let runner = FakeRunner(["OK"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -1072,9 +1083,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func cancelDuringConfirmingLeavesNoLiveTimerBehind() {
     let connection = FakeDeviceConnection()
     connection.cancelPairingEmitsDisconnected = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -1094,10 +1105,10 @@ private func chooseAndArmCandidate(
 /// candidate that has never dropped.
 @Test @MainActor func cancelFromFailedReturnsToInactiveAndClearsDropFlagForNextAttempt() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     // Force a drop so droppedDuringAttempt is genuinely true going into the failure.
@@ -1143,9 +1154,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func pairingMenuEntryShowsParujWhenInactiveWithNoSavedDevice() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     #expect(state.pairing == .inactive)
     #expect(!state.hasSavedDevice)
@@ -1156,9 +1167,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func pairingMenuEntryShowsZmienWhenInactiveWithSavedDevice() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     #expect(state.pairing == .inactive)
     #expect(state.hasSavedDevice)
@@ -1171,9 +1182,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func pairingMenuEntryShowsInProgressWhileSearching() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     guard case .searching = state.pairing else {
@@ -1186,9 +1197,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func pairingMenuEntryShowsInProgressWhileConnecting() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     let id = UUID()
@@ -1206,9 +1217,9 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func pairingMenuEntryShowsInProgressWhileConfirming() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -1221,10 +1232,10 @@ private func chooseAndArmCandidate(
 
 @Test @MainActor func pairingMenuEntryShowsFailureWhenPairingFailed() {
     let connection = FakeDeviceConnection()
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     state.startPairing()
     clock.now += AppState.searchTimeout + 1
@@ -1250,9 +1261,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func forgetDeviceClearsSavedDeviceAndLeavesAppIdle() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     state.forgetDevice()
 
@@ -1276,10 +1287,10 @@ private func chooseAndArmCandidate(
 @Test @MainActor func forgetDeviceDuringLivePairingTearsDownSessionCoherently() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -1315,10 +1326,10 @@ private func chooseAndArmCandidate(
     // Every probe call returns .noTarget (see MeetController.probe: an
     // empty FakeRunner always answers "NONE", which is neither length 2
     // nor an error) — nothing here ever resets the idle clock.
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     #expect(state.deviceState == .armed)
@@ -1349,10 +1360,10 @@ private func chooseAndArmCandidate(
     // MeetController.probe and the existing race tests above for the same
     // response shape.
     let runner = FakeRunner(["10", "10"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     queue.flush()  // delivers the immediate probe startProbing() triggers
@@ -1384,10 +1395,10 @@ private func chooseAndArmCandidate(
     // (found on the first browser, so it consumes exactly one runner call);
     // the second is reserved for the press-triggered perform() call below.
     let runner = FakeRunner(["00", "OK"])
-    let controller = MeetController(runner: runner)
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: runner), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)  // idleDeadline now (0 + idleTimeout)
     queue.flush()  // delivers the immediate probe
@@ -1419,9 +1430,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func sleepDeviceDisconnectsAndReturnsToWaitingWhileKeepingSavedDevice() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     #expect(state.deviceState == .armed)
@@ -1448,14 +1459,14 @@ private func chooseAndArmCandidate(
 /// because "the user asked for it, no need to wait"), this is the test that
 /// would catch the two diverging.
 @Test @MainActor func automaticIdlePathAndManualSleepProduceTheIdenticalFallingAsleepSequence() {
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
 
     let idleConnection = FakeDeviceConnection()
     idleConnection.hasSavedDevice = true
     let idleClock = FakeClock()
     let idleState = AppState(
         connection: idleConnection, controller: controller,
-        scriptQueue: TestQueue(), now: { idleClock.now }, browserOrder: { testBrowserOrder }
+        scriptQueue: TestQueue(), now: { idleClock.now }, browserInstances: { testBrowserInstances }
     )
     idleConnection.onState?(.armed)
     idleClock.now += AppState.idleTimeout + 1
@@ -1465,7 +1476,7 @@ private func chooseAndArmCandidate(
     manualConnection.hasSavedDevice = true
     let manualState = AppState(
         connection: manualConnection, controller: controller,
-        scriptQueue: TestQueue(), browserOrder: { testBrowserOrder }
+        scriptQueue: TestQueue(), browserInstances: { testBrowserInstances }
     )
     manualConnection.onState?(.armed)
     manualState.sleepDevice()
@@ -1489,9 +1500,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func sleepDeviceIsANoOpWhenNotArmed() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     // Freshly constructed: .disconnected, nothing to sleep.
     state.sleepDevice()
@@ -1514,9 +1525,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func sleepDeviceIsANoOpDuringPairing() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     state.startPairing()
@@ -1554,9 +1565,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func cancelFallingAsleepReArmsImmediatelyWithoutWaitingForTheWaitToConclude() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     state.sleepDevice()
@@ -1576,10 +1587,10 @@ private func chooseAndArmCandidate(
 @Test @MainActor func cancelFallingAsleepAlsoReArmsTheAutomaticIdleDisconnect() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserInstances: { testBrowserInstances })
 
     connection.onState?(.armed)
     clock.now += AppState.idleTimeout + 1
@@ -1599,9 +1610,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func cancelFallingAsleepIsANoOpWhenNotFallingAsleep() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     // Freshly constructed: .disconnected.
     state.cancelFallingAsleep()
@@ -1627,9 +1638,9 @@ private func chooseAndArmCandidate(
 @Test @MainActor func cancelFallingAsleepIsANoOpDuringPairing() {
     let connection = FakeDeviceConnection()
     connection.hasSavedDevice = true
-    let controller = MeetController(runner: FakeRunner([]))
+    let controller = MeetController(primary: AppleScriptMeetBackend(runner: FakeRunner([])), fallback: nil)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserInstances: { testBrowserInstances })
 
     connection.onState?(.fallingAsleep)
     state.startPairing()
@@ -1643,4 +1654,45 @@ private func chooseAndArmCandidate(
     #expect(!connection.cancelSleepWaitCalled)
     #expect(state.deviceState == .fallingAsleep)
     #expect(state.pairing == .searching([]))
+}
+
+// MARK: - Injected Instances reach the controller
+
+/// Backend that records the Instances it was handed.
+private final class RecordingBackend: MeetBackend {
+    private let probeOutcome: ProbeOutcome
+    private(set) var seenInstances: [[BrowserInstance]] = []
+
+    init(probe: ProbeOutcome) { probeOutcome = probe }
+
+    func probe(instances: [BrowserInstance]) -> ProbeOutcome {
+        seenInstances.append(instances)
+        return probeOutcome
+    }
+
+    func perform(_ action: MeetAction, instances: [BrowserInstance]) -> ActionOutcome {
+        seenInstances.append(instances)
+        return .noTarget
+    }
+}
+
+@Test @MainActor func probePassesTheInjectedInstancesToTheController() {
+    // The wiring under test: whatever RunningBrowsers would have produced is
+    // what the controller gets, resolved on the main thread before the work
+    // hops to the script queue.
+    let connection = FakeDeviceConnection()
+    let queue = TestQueue()
+    let backend = RecordingBackend(probe: .noTarget)
+    let state = AppState(
+        connection: connection,
+        controller: MeetController(primary: backend, fallback: nil),
+        scriptQueue: queue,
+        browserInstances: { testBrowserInstances }
+    )
+    connection.onState?(.armed)
+    queue.flush()
+    #expect(backend.seenInstances == [testBrowserInstances])
+    // Silences the unused-variable warning; `state` has to stay alive for the
+    // probe it kicked off to reach the queue at all.
+    _ = state.targetDescription
 }
