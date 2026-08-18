@@ -169,6 +169,47 @@ private final class TestQueue: ScriptQueue {
     #expect(state.probeError == nil)
 }
 
+// MARK: - Injected browser order
+
+/// Mutation check for `docs/follow-ups.md`'s "Zrobione" entry on this exact
+/// point: `testBrowserOrder` above is identical to `BrowserOrder.all`, which
+/// is also what `BrowserOrder.ordered()` falls back to whenever the
+/// frontmost application isn't one of the listed browsers — so every test in
+/// this file that passes `testBrowserOrder` would keep passing even if a
+/// call site were reverted to call `BrowserOrder.ordered()` directly and the
+/// injected `browserOrder` parameter went unused, in any environment where a
+/// browser doesn't happen to be forcibly frontmost. This test uses a
+/// *reversed* order instead — genuinely different from `BrowserOrder.all` —
+/// and asserts on `ProbeResult.browser`, a value that can only come out
+/// reversed if `refreshTarget()` is actually calling the injected closure
+/// rather than reading `NSWorkspace` on its own.
+///
+/// Verified the honest way (manual, not automated): temporarily changed
+/// `refreshTarget()`'s `let browsers = browserOrder()` to
+/// `let browsers = BrowserOrder.ordered()` — this test failed (`state.target?.browser`
+/// came back `"Google Chrome"`, the production default's first entry,
+/// instead of `"Brave Browser"`), while every other test in this file kept
+/// passing. Reverted immediately after confirming the failure.
+@Test @MainActor func probeHonorsInjectedBrowserOrderNotJustProductionDefault() {
+    let connection = FakeDeviceConnection()
+    let reversedOrder = Array(testBrowserOrder.reversed())
+    #expect(reversedOrder != BrowserOrder.all)
+
+    // A single length-2 response is consumed by whichever browser is tried
+    // first. If the reversed order is genuinely honored, that's "Brave
+    // Browser" — the *second* entry in both `BrowserOrder.all` and
+    // `testBrowserOrder`, first only here.
+    let runner = FakeRunner(["10"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { reversedOrder })
+
+    connection.onState?(.armed)
+    queue.flush()
+
+    #expect(state.target?.browser == "Brave Browser")
+}
+
 // MARK: - Race 2: overlapping probes
 
 @Test @MainActor func secondProbeQueuesAsPendingNotParallel() {
