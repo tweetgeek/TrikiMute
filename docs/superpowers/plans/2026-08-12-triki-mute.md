@@ -1689,6 +1689,12 @@ final class AppState {
     private let controller = MeetController(runner: AppleScriptRunner())
     private var sonda: Timer?
     private var sondaWToku = false
+    /// Sonda zgłoszona w trakcie innej. Nie ginie — ruszy zaraz po niej.
+    private var sondaZalegla = false
+    /// Numer pokolenia sondy. Wynik ze starego pokolenia jest ignorowany:
+    /// rozłączenie podbija numer, więc odpowiedź wysłana przed rozłączeniem
+    /// nie wpisze z powrotem danych urządzenia, którego już nie ma.
+    private var pokolenieSondy = 0
 
     /// Skrypty wykonują się poza głównym wątkiem. `NSAppleScript` blokuje na
     /// czas rozmowy z przeglądarką, a przy pierwszym użyciu także na czas
@@ -1788,17 +1794,30 @@ final class AppState {
         rssi = nil
         bladSondy = nil
         sondaWToku = false
+        sondaZalegla = false
+        // Unieważnia sondę będącą w locie — jej wynik dotyczy stanu sprzed
+        // rozłączenia i nie ma prawa wrócić na ekran.
+        pokolenieSondy += 1
     }
 
     /// Jeden przebieg sondy: gdzie jest Cel, w jakim jest stanie i jak mocny
     /// jest sygnał Kapsla. Siła sygnału przychodzi asynchronicznie przez onRSSI.
     ///
-    /// Flaga `sondaWToku` chroni przed piętrzeniem: gdyby przeglądarka się
-    /// zawiesiła, timer co 3 sekundy dokładałby kolejne wywołania do kolejki
-    /// bez końca.
+    /// Sonda nie może się piętrzyć: gdyby przeglądarka się zawiesiła, timer co
+    /// 3 sekundy dokładałby kolejne wywołania bez końca. Ale nie może też
+    /// gubić zgłoszeń — odświeżenie po Akcji jest celowe i zniknięcie go
+    /// zostawiałoby na ekranie stan sprzed Akcji aż do następnego cyklu.
+    /// Stąd zaległość: w kolejce czeka najwyżej jedna sonda i rusza od razu
+    /// po bieżącej.
     private func odswiezCel() {
-        guard !sondaWToku else { return }
+        guard !sondaWToku else {
+            sondaZalegla = true
+            return
+        }
         sondaWToku = true
+        sondaZalegla = false
+        pokolenieSondy += 1
+        let moje = pokolenieSondy
         let przegladarki = BrowserOrder.uporzadkowane()
         let controller = self.controller
         polaczenie.odczytajRSSI()
@@ -1807,6 +1826,9 @@ final class AppState {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 sondaWToku = false
+                // Wynik przedawniony: w międzyczasie sonda została zatrzymana
+                // albo wystartowała nowsza. Nie ma prawa niczego nadpisać.
+                guard moje == pokolenieSondy else { return }
                 switch wynik {
                 case .target(let cel):
                     self.cel = cel
@@ -1820,6 +1842,7 @@ final class AppState {
                     cel = nil
                     bladSondy = opis
                 }
+                if sondaZalegla { odswiezCel() }
             }
         }
     }
