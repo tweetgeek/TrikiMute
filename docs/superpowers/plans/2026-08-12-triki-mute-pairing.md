@@ -195,6 +195,22 @@ func cancelPairing()
 - Parowanie musi dać się przerwać na każdym etapie, a przerwanie zostawia dotychczasowe urządzenie nietknięte.
 - Sonda Meet nie ma sensu w trakcie parowania — nie odpytuj przeglądarek w tym czasie.
 
+**Kandydat widmo — wykryte przy recenzji Task 2.** Kapsel, który przestanie się
+reklamować w trakcie skanowania, zostaje na liście. Wybranie go **zawiesza
+aplikację**: `connect()` w CoreBluetooth nie ma limitu czasu, nie mamy podpiętej
+obsługi nieudanego połączenia, więc stan zostaje na „szukam" bez komunikatu,
+a jedynym wyjściem jest przerwanie parowania.
+
+To zadanie musi to zamknąć. Wybierz jedno z dwóch, uzasadniając wybór:
+- ograniczenie czasu na połączenie z kandydatem, po którym parowanie zgłasza
+  niepowodzenie i wraca do listy,
+- albo usuwanie z listy kandydatów, którzy nie odezwali się od pewnego czasu,
+  plus i tak jakieś ograniczenie czasu, bo urządzenie może zniknąć między
+  wyświetleniem listy a kliknięciem.
+
+Ograniczenie czasu jest konieczne w obu wariantach — samo usuwanie nieaktualnych
+wpisów nie wyklucza wyścigu między wyświetleniem a kliknięciem.
+
 **Testy** (dopisz do istniejącego zestawu, korzystając z wstrzykiwanych atrap):
 
 | Przypadek | Oczekiwanie |
@@ -204,6 +220,7 @@ func cancelPairing()
 | upływ czasu | faza `failed`, identyfikator **nie** zapisany |
 | przerwanie w trakcie | faza `inactive`, zapisany identyfikator bez zmian |
 | naciśnięcie poza parowaniem | wywołuje Akcję jak dotąd (test regresyjny) |
+| kandydat nie łączy się w zadanym czasie | faza `failed`, powrót do listy, brak zawieszenia |
 
 - [ ] **Step 1: Napisz testy**
 
