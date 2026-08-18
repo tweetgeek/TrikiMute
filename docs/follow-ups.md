@@ -50,8 +50,15 @@ w rozmowie" nie jest oczywiste, stąd decyzja o udokumentowaniu zamiast naprawy.
 
 **Zapisany identyfikator, który się rozwiązuje, ale jest nieosiągalny.** Kapsel
 po resecie fabrycznym albo sparowany z innym komputerem daje wieczne „szukam"
-bez samoczynnego powrotu do skanowania. Wyjściem jest „Zapomnij Kapsel", które
-po naprawie z końcowej recenzji działa poprawnie.
+bez samoczynnego powrotu do skanowania. Wyjściem jest „Zmień Kapsla" w menu —
+uruchamia nowe parowanie niezależnie od stanu bieżącego (zawieszonego)
+połączenia, a wybór i potwierdzenie nowego urządzenia nadpisuje zapisany
+identyfikator. Osobna pozycja „Zapomnij Kapsel" nie istnieje w menu od wczesnej
+wersji parowania z wyboru — wybranie i potwierdzenie nowego urządzenia jest jej
+nadzbiorem. Końcowa recenzja zastała jednak `forget()` wciąż w protokole
+`DeviceConnection`, wywoływane tylko przez testową atrapę — martwy kod
+udający istniejącą ścieżkę odzysku. Usunięty; ten wpis poprawiony, żeby nazywać
+rzeczywistą ścieżkę.
 
 **Kliknięcie przy stanie „wymaga zatwierdzenia".** Wywołuje ponowną rejestrację
 zamiast otworzyć Ustawienia systemowe na panelu elementów logowania.

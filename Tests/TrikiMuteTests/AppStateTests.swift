@@ -14,7 +14,6 @@ private final class FakeDeviceConnection: DeviceConnection {
     var onCandidates: (([DeviceCandidate]) -> Void)?
 
     private(set) var startCalled = false
-    private(set) var forgetCalled = false
     private(set) var startPairingCallCount = 0
     private(set) var cancelPairingCalled = false
     private(set) var confirmPairingCalled = false
@@ -38,7 +37,6 @@ private final class FakeDeviceConnection: DeviceConnection {
 
     func start() { startCalled = true }
     func readRSSI() {}
-    func forget() { forgetCalled = true }
     @discardableResult
     func startPairing() -> Bool {
         startPairingCallCount += 1

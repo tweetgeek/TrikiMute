@@ -32,7 +32,6 @@ protocol DeviceConnection: AnyObject {
 
     func start()
     func readRSSI()
-    func forget()
 
     /// Enters discovery mode: scans and reports candidates via
     /// `onCandidates` instead of connecting to anything automatically. Does

@@ -96,27 +96,6 @@ final class TrikiConnection: NSObject {
         peripheral?.readRSSI()
     }
 
-    /// Forgets the device and goes back to waiting. Use when you need to
-    /// pair a different one — the app won't reconnect until `startPairing()`
-    /// is called again.
-    ///
-    /// Also ends any pairing session in progress: `central` — and therefore
-    /// the scan invariant (never left running with nothing able to stop it)
-    /// — belongs solely to this type, so it has to hold regardless of what
-    /// a caller does, not merely because the menu is expected to prevent
-    /// calling this mid-pairing.
-    func forget() {
-        UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
-        if pairing != nil {
-            central.stopScan()
-            pairing = nil
-        }
-        if let peripheral { central.cancelPeripheralConnection(peripheral) }
-        peripheral = nil
-        onState?(.disconnected)
-        resumeSearch()
-    }
-
     /// Enters discovery mode: clears any previous candidate list and starts
     /// scanning. Leaves the saved identifier and the current `peripheral`
     /// (if any) untouched — a saved device already connecting or connected
@@ -131,7 +110,7 @@ final class TrikiConnection: NSObject {
     /// drop `chosen`, which `cancelPairing()` reads to decide whether to
     /// disconnect a connected candidate and restore the saved device; with
     /// `chosen` gone, it would take the wrong branch. Same reasoning Task
-    /// 2's review applied to `confirmPairing()` and `forget()`.
+    /// 2's review applied to `confirmPairing()`.
     ///
     /// Returns `false` without doing anything if Bluetooth isn't powered on
     /// or a session is already live — a silent no-op here previously left
@@ -334,10 +313,12 @@ extension TrikiConnection: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
-            // Deliberate disconnect: forget() already cleared peripheral
-            // before the callback arrived. Without this guard, "Forget
-            // Device" would immediately reconnect, and the scan would save
-            // the identifier right back.
+            // Deliberate disconnect: `choose(_:)` or `cancelPairing()` already
+            // reassigned/cleared `peripheral` before this callback arrived —
+            // e.g. `choose(_:)` disconnecting a previously connected saved
+            // device in favor of the newly chosen candidate. Without this
+            // guard, a stale disconnect for that no-longer-current peripheral
+            // would immediately reconnect it.
             guard peripheral.identifier == self.peripheral?.identifier else { return }
             rx = nil
             onState?(.disconnected)
