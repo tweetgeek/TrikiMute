@@ -1268,10 +1268,11 @@ struct TrikiMuteApp: App {
 Otwórz rozmowę Meet, przełącz się do innej aplikacji, po czym z paska menu wywołaj kolejno wszystkie trzy pozycje. Oczekiwane:
 
 - przy pierwszym uruchomieniu macOS pyta o zgodę na sterowanie przeglądarką — zgódź się,
-- „Sonda" wypisuje `ProbeResult` z nazwą przeglądarki i stanami,
+- „Sonda" wypisuje `ProbeOutcome.target` z nazwą przeglądarki i stanami,
 - „Przełącz mikrofon" wycisza rozmowę **bez przenoszenia focusu** na przeglądarkę,
 - „Przełącz kamerę" wyłącza kamerę,
-- po zamknięciu karty Meet sonda zwraca `nil`, a akcje `noTarget`.
+- po zamknięciu karty Meet sonda zwraca `noTarget`, tak samo jak akcje,
+- po cofnięciu zgody na Automation sonda zwraca `failed` z kodem błędu, a **nie** `noTarget` — to jest rozróżnienie, dla którego zmieniliśmy typ.
 
 Logi zobaczysz przez `log stream --predicate 'process == "TrikiMute"'` albo uruchamiając binarkę wprost: `build/TrikiMute.app/Contents/MacOS/TrikiMute`.
 
