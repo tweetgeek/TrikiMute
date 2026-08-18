@@ -15,15 +15,25 @@ private final class FakeDeviceConnection: DeviceConnection {
 
     private(set) var startCalled = false
     private(set) var forgetCalled = false
-    private(set) var startPairingCalled = false
+    private(set) var startPairingCallCount = 0
     private(set) var cancelPairingCalled = false
     private(set) var confirmPairingCalled = false
     private(set) var chosenID: UUID?
 
+    var startPairingCalled: Bool { startPairingCallCount > 0 }
+    /// Controls what `startPairing()` reports back — flip to `false` to
+    /// simulate Bluetooth not being ready (Issue 1, final review).
+    var startPairingResult = true
+    var hasSavedDevice = false
+
     func start() { startCalled = true }
     func readRSSI() {}
     func forget() { forgetCalled = true }
-    func startPairing() { startPairingCalled = true }
+    @discardableResult
+    func startPairing() -> Bool {
+        startPairingCallCount += 1
+        return startPairingResult
+    }
     func choose(_ id: UUID) { chosenID = id }
     func cancelPairing() { cancelPairingCalled = true }
     func confirmPairing() { confirmPairingCalled = true }
@@ -552,4 +562,68 @@ private func chooseAndArmCandidate(
     // No hang: pairing can be started again right away.
     state.startPairing()
     #expect(state.pairing == .searching([]))
+}
+
+// MARK: - Final review fixes
+
+/// Issue 1: `startPairing()` used to set `.searching([])` unconditionally,
+/// even when `TrikiConnection.startPairing()` silently refused (e.g.
+/// Bluetooth off) — the menu kept showing "Szukam Kapsli…" forever with no
+/// scan actually running. `deviceState` already carries the specific cause
+/// via `onState(.error(...))`, which fires synchronously on every
+/// CoreBluetooth state change — this pins that `startPairing()` reads it
+/// instead of announcing a search.
+@Test @MainActor func startPairingFailureNamesCauseInsteadOfAnnouncingSearch() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    connection.onState?(.error("Bluetooth jest wyłączony"))
+    connection.startPairingResult = false
+
+    state.startPairing()
+
+    guard case .failed(let message) = state.pairing else {
+        Issue.record("expected .failed naming the cause instead of announcing a search that isn't running")
+        return
+    }
+    #expect(message == "Bluetooth jest wyłączony")
+    #expect(connection.startPairingCallCount == 1)
+}
+
+/// Issue 1, second half: the menu's pairing button label must track whether
+/// a device is actually saved, not `deviceState` — which can read `.error`
+/// (Bluetooth off) even with a device saved, and used to show "Paruj Kapsla"
+/// (first-time wording) in that case instead of "Zmień Kapsla".
+@Test @MainActor func hasSavedDeviceReflectsConnectionRegardlessOfDeviceState() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    connection.hasSavedDevice = true
+    connection.onState?(.error("Bluetooth jest wyłączony"))
+
+    #expect(state.hasSavedDevice)
+}
+
+@Test @MainActor func startPairingRefusedWhileSessionAlreadyLive() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    state.startPairing()
+    #expect(connection.startPairingCallCount == 1)
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+
+    // A session is already live — the second call must be refused without
+    // touching TrikiConnection again or discarding the candidate list already
+    // collected.
+    state.startPairing()
+
+    #expect(connection.startPairingCallCount == 1)
+    #expect(state.pairing == .searching([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)]))
 }

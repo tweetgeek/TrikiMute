@@ -82,6 +82,14 @@ final class TrikiConnection: NSObject {
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
+    /// Whether a device identifier is currently saved — independent of
+    /// whether that device is reachable right now. See the protocol doc
+    /// comment on `DeviceConnection.hasSavedDevice` for why the menu needs
+    /// this instead of reading `DeviceState`.
+    var hasSavedDevice: Bool {
+        UserDefaults.standard.string(forKey: Self.knownDeviceKey) != nil
+    }
+
     /// Requests a signal strength reading. The answer arrives asynchronously
     /// in `peripheral(_:didReadRSSI:error:)`.
     func readRSSI() {
@@ -124,10 +132,20 @@ final class TrikiConnection: NSObject {
     /// disconnect a connected candidate and restore the saved device; with
     /// `chosen` gone, it would take the wrong branch. Same reasoning Task
     /// 2's review applied to `confirmPairing()` and `forget()`.
-    func startPairing() {
-        guard central?.state == .poweredOn, pairing == nil else { return }
+    ///
+    /// Returns `false` without doing anything if Bluetooth isn't powered on
+    /// or a session is already live — a silent no-op here previously left
+    /// `AppState` announcing a search that wasn't actually running (final
+    /// review, Issue 1). The Bluetooth-not-ready case doesn't need its own
+    /// message: `centralManagerDidUpdateState` already reports the specific
+    /// cause via `onState(.error(...))` whenever the state changes, so
+    /// `AppState.deviceState` already holds it by the time this refuses.
+    @discardableResult
+    func startPairing() -> Bool {
+        guard central?.state == .poweredOn, pairing == nil else { return false }
         pairing = PairingSession()
         central.scanForPeripherals(withServices: nil, options: nil)
+        return true
     }
 
     /// Stops scanning, connects to the chosen candidate, and lets it run the

@@ -44,8 +44,11 @@ struct MenuBarView: View {
         switch state.pairing {
         case .inactive:
             // Same action either way; the label is the only thing that
-            // changes between "first pairing" and "change device".
-            Button(state.deviceState == .disconnected ? "Paruj Kapsla" : "Zmień Kapsla") {
+            // changes between "first pairing" and "change device". Keyed off
+            // whether a device is saved, not off `deviceState` — that can
+            // read `.error` (e.g. Bluetooth off) even with a device already
+            // saved, which used to show "Paruj Kapsla" in that case.
+            Button(state.hasSavedDevice ? "Zmień Kapsla" : "Paruj Kapsla") {
                 state.startPairing()
             }
 

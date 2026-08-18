@@ -22,6 +22,14 @@ protocol DeviceConnection: AnyObject {
     /// pairing, sorted by signal strength (strongest first).
     var onCandidates: (([DeviceCandidate]) -> Void)? { get set }
 
+    /// Whether a device identifier is currently saved — independent of
+    /// whether that device is reachable right now. Drives the menu's pairing
+    /// button label ("Paruj Kapsla" vs "Zmień Kapsla"), which must not be
+    /// keyed off `DeviceState`: that can read `.error` (e.g. Bluetooth off)
+    /// even though a device is saved, which previously showed the wrong
+    /// label.
+    var hasSavedDevice: Bool { get }
+
     func start()
     func readRSSI()
     func forget()
@@ -29,7 +37,13 @@ protocol DeviceConnection: AnyObject {
     /// Enters discovery mode: scans and reports candidates via
     /// `onCandidates` instead of connecting to anything automatically. Does
     /// not touch the saved device identifier.
-    func startPairing()
+    ///
+    /// Returns `false` and does nothing if Bluetooth isn't ready (powered
+    /// off, unauthorized, unsupported) or a pairing session is already
+    /// active. Refusing silently would leave a caller announcing a search
+    /// that isn't actually running — the caller must be able to tell.
+    @discardableResult
+    func startPairing() -> Bool
     /// Stops scanning and connects to the candidate with this identifier,
     /// carrying it through the normal service-discovery path to `.armed`.
     /// Does not persist anything — the saved identifier is untouched until

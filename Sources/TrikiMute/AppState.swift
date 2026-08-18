@@ -374,10 +374,33 @@ final class AppState {
         case .searching, .connecting, .confirming: return
         case .inactive, .failed: break
         }
+        guard connection.startPairing() else {
+            // Land on the actual cause instead of announcing a search that
+            // isn't running (final review, Issue 1). The Bluetooth-not-ready
+            // causes are already named in `deviceState` — `onState(.error(...))`
+            // fires synchronously on every CoreBluetooth state change, so by
+            // the time `startPairing()` can refuse for that reason,
+            // `deviceState` already holds the specific message. The fallback
+            // covers the one CBManagerState this app doesn't treat as an
+            // error (`.unknown`/`.resetting`, mapped to `.disconnected`).
+            if case .error(let message) = deviceState {
+                pairing = .failed(message)
+            } else {
+                pairing = .failed("Bluetooth jeszcze się nie uruchomił — spróbuj za chwilę.")
+            }
+            updateProbing()
+            return
+        }
         pairing = .searching([])
-        connection.startPairing()
         updateProbing()
     }
+
+    /// Whether a device identifier is currently saved. Drives the menu's
+    /// pairing button label — deliberately not keyed off `deviceState`,
+    /// which can be `.error` (e.g. Bluetooth off) even though a device is
+    /// saved and would otherwise show "Paruj Kapsla" for a device that only
+    /// needs Bluetooth back, not a first-time pairing (final review, Issue 1).
+    var hasSavedDevice: Bool { connection.hasSavedDevice }
 
     /// Picks a candidate from the current list and connects to it. Rolls the
     /// required press count exactly once, here — it survives unchanged into
