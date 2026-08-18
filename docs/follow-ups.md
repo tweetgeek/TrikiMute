@@ -8,6 +8,29 @@ Kolejność mniej więcej według wartości naprawy.
 
 ## Warte zrobienia przy następnym dotknięciu kodu
 
+**Zrobione: zużycie baterii Kapsla przy stałym połączeniu.** Zmierzone na
+żywym urządzeniu: 98%→90% w ciągu jednej nocy, czyli około dwunastu dni
+czuwania zamiast tygodni, jakich należałoby oczekiwać po sprzęcie
+w spoczynku — gorzej, niż wcześniejsze „niezweryfikowane" założenie
+sugerowało. Przyczyna była znana i udokumentowana od początku: stan
+przycisku jest zaszyty w nagłówku ramek IMU, a strumień rusza dopiero po
+komendzie startowej, więc uzbrojony Kapsel musiał nadawać ~106 ramek/s bez
+przerwy, żeby aplikacja miała jak zauważyć naciśnięcie — a aplikacja po
+uzbrojeniu nigdy się nie rozłączała, więc strumień szedł całą noc bez
+żadnej rozmowy w tle. Nie istnieje znany sposób usypiania Kapsla na
+żądanie — TrikiScope dokumentuje wyłącznie komendę startową — a szukanie
+komendy usypiającej byłoby reverse engineeringiem o niepewnym wyniku,
+świadomie nieodbytym. Naprawione rozłączeniem: bez połączenia Kapsel
+przestaje nadawać i zasypia sam, dokładnie jak wtedy, gdy aplikacja nie
+działa, a model Uzbrojenia i tak trzyma zawieszone `connect()`, które
+podnosi połączenie z powrotem, gdy tylko naciśnięcie przycisku obudzi
+Kapsla. Polityka: rozłączenie po 10 minutach bez Celu, z zegarem liczonym
+od nowa przy każdym pojawieniu się Celu i przy każdym zdarzeniu przycisku,
+żeby długie spotkanie bez naciśnięć nie rozłączyło Kapsla w trakcie.
+Zapamiętany identyfikator przeżywa rozłączenie — to nie jest „Zapomnij
+Kapsel" — a pasek menu wraca do tego samego „Szukam Kapsla — naciśnij
+przycisk, żeby go obudzić", co po zwykłym starcie aplikacji.
+
 **Zapis wybranego identyfikatora nie jest pilnowany testem.** To jedyna
 obietnica, dla której parowanie z wyboru w ogóle powstało: potwierdzenie ma
 zapisać urządzenie, które wskazałeś, a nie to, z którym aplikacja akurat jest
@@ -48,8 +71,11 @@ zmieniło, a każdy `AppState` w `AppStateTests.swift` dostaje teraz stałą
 **Sonda odpytuje dwie przeglądarki co 3 sekundy bez końca.** Gdy Celu nie ma,
 ikona i tak nie ma czego pokazywać, więc rzadszy takt nic nie kosztuje. 3 s przy
 istniejącym Celu, 15 s bez niego, ścięłoby ruch Apple Events o cztery piąte
-w najczęstszym stanie „uzbrojony, ale nie w rozmowie". To ten sam mechanizm,
-który stoi za niezmierzonym dotąd zużyciem baterii Kapsla.
+w najczęstszym stanie „uzbrojony, ale nie w rozmowie". To ten sam założeniowy
+błąd, który stał za zmierzonym już zużyciem baterii Kapsla (patrz wyżej):
+traktowanie „uzbrojony" jednakowo niezależnie od tego, czy Cel istnieje.
+Rozłączenie z bezczynności naprawiło stronę Kapsla; ten wpis zostaje, bo
+osobno kosztuje też ruch Apple Events po stronie Maca.
 
 **Timer sondy zatrzymuje się, gdy menu jest otwarte.** `Timer.scheduledTimer`
 rejestruje się w trybie `.default`, a `MenuBarExtra` śledzi zdarzenia w trybie
@@ -137,7 +163,6 @@ Odłożone jako osobna praca, żeby nie zmieniać założenia planu w ostatniej 
 
 ## Niezweryfikowane na żywo
 
-- Zużycie baterii Kapsla przy długiej sesji ciągłego strumienia.
 - Utrata i odzyskanie zasięgu — połączenie nie zerwało się ani razu w trakcie
   testów, więc ścieżka ponownego łączenia została prześledzona w kodzie, ale nie
   uruchomiona.

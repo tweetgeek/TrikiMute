@@ -142,6 +142,38 @@ final class TrikiConnection: NSObject {
         resumeSearch()
     }
 
+    /// Ends the live connection for the sake of battery, without forgetting
+    /// the device or giving up on it: the saved identifier is left
+    /// untouched, and — critically — so is `peripheral`. That's what makes
+    /// this the mirror image of `forget()` rather than a duplicate of it:
+    /// `forget()` clears `peripheral` *before* disconnecting specifically so
+    /// `didDisconnectPeripheral`'s staleness guard suppresses the automatic
+    /// reconnect; here the guard is left free to fire, so the very next
+    /// `didDisconnectPeripheral` callback re-issues the pending `connect()`
+    /// and reports `.searching` on its own — exactly the same path an
+    /// ordinary, unplanned loss of range already takes. Nothing new has to
+    /// be taught to the reconnect logic; this just asks it to run early.
+    ///
+    /// Called by `AppState` once its idle policy (no Meet Target for
+    /// `AppState.idleTimeout`) decides the device should be allowed to
+    /// sleep. There is no documented command that puts the Kapsel to sleep
+    /// on request — TrikiScope only ever documented the stream's start
+    /// command — so disconnecting is the reliable substitute: with nothing
+    /// connected, the device stops transmitting and sleeps on its own,
+    /// exactly as it does whenever the app isn't running at all. Measured in
+    /// the field under the previous always-connected policy: 98%→90%
+    /// overnight, roughly twelve days of standby for hardware that should
+    /// idle for weeks (see `docs/follow-ups.md`).
+    ///
+    /// Guards on `pairing == nil` defensively, same posture as the other
+    /// methods here — `AppState` only calls this while its own pairing phase
+    /// is `.inactive`, but nothing about this type's own invariants should
+    /// depend on a caller remembering that.
+    func disconnectIdle() {
+        guard pairing == nil, let peripheral else { return }
+        central.cancelPeripheralConnection(peripheral)
+    }
+
     /// Enters discovery mode: clears any previous candidate list and starts
     /// scanning. Leaves the saved identifier and the current `peripheral`
     /// (if any) untouched — a saved device already connecting or connected

@@ -147,9 +147,43 @@ final class AppState {
     /// there.
     private var probeGeneration = 0
 
+    /// Deadline (on the injected `now()` clock) after which the device is
+    /// allowed to sleep — `nil` while there's nothing to watch, i.e.
+    /// whenever `stopProbing()` runs (not Armed, or a pairing session is
+    /// live). Restarted by `resetIdleClock()` on any evidence someone is
+    /// around: the device just Armed, the probe found a Target, or a button
+    /// event reached `perform(_:)`. Unlike the pairing timers'
+    /// `checkXDeadline()` methods — which are one-shot and never reset
+    /// mid-phase, so being called at all is equivalent to "the deadline
+    /// passed" — this deadline is reset far more often than it fires, so
+    /// `checkIdleDeadline()` has to compare against `now()` itself rather
+    /// than trust its caller.
+    private var idleDeadline: TimeInterval?
+
     /// Probe interval. The probe only runs while the device is Armed —
     /// outside of a call there's nothing to poll.
     private static let probeInterval: TimeInterval = 3.0
+
+    /// How long the device may stay Armed with no Meet Target before the
+    /// app disconnects it deliberately, so it can sleep. The button state
+    /// lives in the header of the IMU frames, and the stream only starts
+    /// after the start command — so an Armed device has to transmit
+    /// continuously (~106 frames/second) for the app to have any chance of
+    /// seeing a press, and there is no documented command that puts it back
+    /// to sleep on request. Measured in the field under the previous
+    /// always-connected policy: 98%→90% battery overnight, roughly twelve
+    /// days of standby for hardware that should idle for weeks (see
+    /// `docs/follow-ups.md`). Disconnecting is the reliable substitute for a
+    /// sleep command: with nothing connected the device stops transmitting
+    /// and sleeps on its own, and the arming model already holds a pending
+    /// `connect()` that picks it back up the instant a press wakes it — see
+    /// `TrikiConnection.disconnectIdle()`. 10 minutes is generous enough
+    /// that a long meeting where nobody presses anything never trips it
+    /// (every Target sighting resets the clock — see `refreshTarget()`), but
+    /// still short enough to matter for a capsule left Armed and forgotten.
+    /// Not `private`: `AppStateTests` crosses it deliberately via the
+    /// injected clock.
+    static let idleTimeout: TimeInterval = 600.0
 
     /// How long `.searching` scans before giving up if nothing is chosen.
     /// The Kapsel doesn't advertise until its button is pressed, so this has
@@ -247,6 +281,12 @@ final class AppState {
         connection.onState = { [weak self] state in
             guard let self else { return }
             deviceState = state
+            // Fresh evidence the device is actually reachable — restart the
+            // idle-sleep countdown from here regardless of pairing phase.
+            // `stopProbing()` (via `updateProbing()` below) clears it again
+            // for every non-Armed state, so a stale reset from a background
+            // saved device can't outlive its own connection.
+            if state == .armed { resetIdleClock() }
             switch pairing {
             case .connecting(let candidate):
                 // Only Armed advances the phase — .disconnected/.searching/
@@ -308,6 +348,12 @@ final class AppState {
                 // Action for an unconfirmed device.
                 break
             case .inactive, .searching, .failed:
+                // A genuine button event reaching the currently-controlled
+                // device — as opposed to a press consumed by
+                // `PairingConfirmation` for a different, not-yet-confirmed
+                // candidate — is exactly the kind of activity the idle
+                // policy exists to not disconnect through.
+                resetIdleClock()
                 perform(event == .press ? .microphone : .camera)
             }
         }
@@ -728,6 +774,10 @@ final class AppState {
         // before the disconnect and has no business coming back to the
         // screen.
         probeGeneration += 1
+        // Nothing left to watch while probing is stopped — not Armed, or
+        // mid-pairing. Cleared here rather than only where it was set, so it
+        // can't outlive the connection it was measuring.
+        idleDeadline = nil
     }
 
     /// One probe cycle: where the Target is, what state it's in, and how
@@ -777,6 +827,9 @@ final class AppState {
                 case .target(let target):
                     self.target = target
                     probeError = nil
+                    // A Meet Target is the strongest signal someone is
+                    // actually in a call — restart the idle-sleep countdown.
+                    resetIdleClock()
                 case .noTarget:
                     target = nil
                     probeError = nil
@@ -787,6 +840,12 @@ final class AppState {
                     target = nil
                     probeError = message
                 }
+                // Every probe cycle — found, empty, or failed — is also the
+                // idle policy's own clock tick: the probe already only runs
+                // while Armed and outside pairing, exactly the condition
+                // under which the idle countdown is meaningful, so no
+                // separate timer is needed to drive it.
+                checkIdleDeadline()
                 if probePending { refreshTarget() }
             }
         )
@@ -888,5 +947,45 @@ final class AppState {
         let outcome = pending.tick(at: now())
         confirmation = pending
         handlePairingOutcome(outcome)
+    }
+
+    /// Restarts the idle-sleep countdown from `now()`. Called on any
+    /// evidence someone is around: the device just Armed (`onState`), the
+    /// probe found a Target (`refreshTarget()`), or a button event reached
+    /// `perform(_:)` (`onEvent`). A long meeting where nobody presses
+    /// anything still keeps resetting this — the probe re-finds the Target
+    /// every `probeInterval` for as long as the call lasts.
+    private func resetIdleClock() {
+        idleDeadline = now() + Self.idleTimeout
+    }
+
+    /// Evaluates whether the idle-sleep deadline has passed. Driven by
+    /// `refreshTarget()`'s own cadence rather than a dedicated timer — the
+    /// probe already only runs while Armed and outside pairing, exactly the
+    /// window in which this deadline is meaningful, so reusing it costs
+    /// nothing extra and can't drift out of sync with it.
+    ///
+    /// Compares against `now()` explicitly, unlike the pairing deadline
+    /// checks above: those are one-shot and never reset mid-phase, so being
+    /// called at all already means the deadline passed. `idleDeadline` is
+    /// reset far more often than it fires (see `resetIdleClock()`), so this
+    /// has to be able to tell "recently reset" from "genuinely idle" instead
+    /// of treating every call as a foregone conclusion.
+    ///
+    /// Package visibility (not `private`), same reasoning as the other
+    /// deadline checks: `AppStateTests` calls this directly through the
+    /// injected clock instead of waiting on real time.
+    func checkIdleDeadline() {
+        guard deviceState == .armed, pairing == .inactive,
+              let idleDeadline, now() >= idleDeadline else { return }
+        self.idleDeadline = nil
+        // Disconnects without forgetting — see `disconnectIdle()`'s doc
+        // comment. `didDisconnectPeripheral`'s existing reconnect-on-advertise
+        // path (the same one an ordinary loss of range already takes) brings
+        // the device back the moment its button next wakes it; `updateProbing()`
+        // (via the incoming `onState(.disconnected)`/`.searching`) stops the
+        // probe on its own, so nothing keeps polling the browsers while
+        // asleep.
+        connection.disconnectIdle()
     }
 }

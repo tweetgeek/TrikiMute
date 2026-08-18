@@ -41,6 +41,18 @@ protocol DeviceConnection: AnyObject {
     /// trusted to only invoke this while idle.
     func forget()
 
+    /// Ends the live connection so the device can sleep, without forgetting
+    /// it — the saved identifier is untouched, so the existing "resume on
+    /// advertise" path (the same one that already handles an ordinary lost
+    /// connection) picks it back up the moment its button next wakes it.
+    /// The opposite of `forget()`: same teardown, no forgetting. Called by
+    /// `AppState` once its idle policy (no Meet Target for a while) decides
+    /// the device should be allowed to sleep — see
+    /// `TrikiConnection.disconnectIdle()` for why disconnecting, not a
+    /// device-side sleep command, is the only reliable lever: there is no
+    /// documented way to tell the Kapsel to sleep on request.
+    func disconnectIdle()
+
     /// Enters discovery mode: scans and reports candidates via
     /// `onCandidates` instead of connecting to anything automatically. Does
     /// not touch the saved device identifier.

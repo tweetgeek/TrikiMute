@@ -181,6 +181,33 @@ jest potrzebne wyłącznie w trakcie samego parowania.
 
 Rozłączenie w trakcie rozmowy jest natychmiast widoczne w pasku menu.
 
+**Rozłączenie z bezczynności.** Wcześniejsza wersja tej sekcji zakładała, że
+aplikacja po uzbrojeniu zostaje połączona bez końca. Pomiar na żywym
+urządzeniu obalił to założenie: 98%→90% baterii w ciągu jednej nocy, czyli
+około dwunastu dni czuwania zamiast tygodni, jakich należałoby oczekiwać po
+sprzęcie w spoczynku. Przyczyna jest znana i udokumentowana wyżej — stan
+przycisku jest zaszyty w nagłówku ramek IMU, a strumień rusza dopiero po
+komendzie startowej, więc uzbrojony Kapsel musi nadawać ~106 ramek/s bez
+przerwy, żeby aplikacja miała jak zauważyć naciśnięcie. Nie istnieje znany
+sposób usypiania Kapsla na żądanie — TrikiScope dokumentuje wyłącznie komendę
+startową, a szukanie komendy usypiającej byłoby reverse engineeringiem
+o niepewnym wyniku, którego świadomie nie podjęto.
+
+Rozłączenie jest niezawodnym zamiennikiem nieznanej komendy usypiającej: bez
+połączenia Kapsel przestaje nadawać i zasypia sam, dokładnie tak jak wtedy,
+gdy aplikacja nie działa. Model Uzbrojenia opisany wyżej już to obsługuje —
+zawieszone `connect()` podnosi połączenie z powrotem, gdy tylko naciśnięcie
+przycisku obudzi Kapsla, więc rozłączenie z bezczynności nie różni się dla
+użytkownika od zwykłej utraty zasięgu. Polityka: aplikacja rozłącza się, gdy
+Kapsel jest uzbrojony i przez 10 minut nie istnieje żaden Cel. Zegar
+bezczynności liczy się od nowa przy każdym pojawieniu się Celu (sonda
+odpytuje co 3 s, więc trwa to przez całą rozmowę) i przy każdym zdarzeniu
+przycisku — długie spotkanie bez ani jednego naciśnięcia nie rozłączy Kapsla,
+dopóki trwa. Rozłączenie zostawia zapamiętany identyfikator nietknięty —
+w odróżnieniu od „Zapomnij Kapsel" — i pasek menu wraca do tekstu
+„Szukam Kapsla — naciśnij przycisk, żeby go obudzić", bo to dokładnie ten
+sam stan, w jakim aplikacja czeka na pierwsze uzbrojenie po starcie.
+
 **Parowanie — z wyboru, nie automatyczne.** Wcześniejsza wersja tej sekcji
 opisywała parowanie jako w pełni automatyczne: aplikacja łączyła się z
 pierwszym urządzeniem, którego nazwa zawierała „triki". To założenie nie
@@ -368,6 +395,11 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   „rozłączono" do następnej próby, upływ czasu samego skanowania kończy się
   porażką zamiast wiecznym „szukam", a ikona w trakcie parowania jest inna
   niż w spoczynku
+- `AppState` — rozłączenie z bezczynności (przez ten sam wstrzykiwany zegar):
+  upływ 10 minut bez Celu rozłącza, obecność Celu i nadchodzące zdarzenia
+  przycisku odświeżają zegar i nie dopuszczają do rozłączenia, zapamiętany
+  identyfikator przeżywa rozłączenie, a aplikacja wraca do „szukam", nie do
+  rozłączenia bez zapisanego urządzenia
 - `TrikiConnection`: `CentralManaging` — wąski protokół nad pięcioma
   wywołaniami `CBCentralManager`, którego faktycznie używa ten plik —
   pozwala przypiąć testami jednostkowymi część inwariantów, które wcześniej

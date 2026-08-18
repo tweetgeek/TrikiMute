@@ -28,6 +28,7 @@ private final class FakeDeviceConnection: DeviceConnection {
     private(set) var cancelPairingCalled = false
     private(set) var confirmPairingCalled = false
     private(set) var forgetCalled = false
+    private(set) var disconnectIdleCalled = false
     private(set) var chosenID: UUID?
 
     var startPairingCalled: Bool { startPairingCallCount > 0 }
@@ -57,6 +58,17 @@ private final class FakeDeviceConnection: DeviceConnection {
         forgetCalled = true
         hasSavedDevice = false
         onState?(.disconnected)
+    }
+    /// Mirrors the real `TrikiConnection.disconnectIdle()`: leaves
+    /// `hasSavedDevice` untouched (unlike `forget()`) and emits the same
+    /// `.disconnected` → `.searching` pair `didDisconnectPeripheral`'s
+    /// reconnect-on-advertise path produces for an ordinary drop — the saved
+    /// device survives, and the app goes back to waiting for a press to
+    /// re-arm it, not to idle-with-nothing-saved.
+    func disconnectIdle() {
+        disconnectIdleCalled = true
+        onState?(.disconnected)
+        onState?(.searching)
     }
     @discardableResult
     func startPairing() -> Bool {
@@ -888,4 +900,105 @@ private func chooseAndArmCandidate(
     #expect(connection.forgetCalled)
     #expect(!connection.confirmPairingCalled)
     #expect(!state.hasSavedDevice)
+}
+
+// MARK: - Idle-sleep disconnect
+
+/// The plain case: the device Arms, no Meet Target ever shows up, and
+/// `idleTimeout` passes. The saved identifier must survive (this is not
+/// `forgetDevice()`), and the app must land back on `.searching` — waiting
+/// for the next press to re-arm it — rather than on `.disconnected` with
+/// nothing saved.
+@Test @MainActor func idleTimeoutDisconnectsAfterTargetAbsentAndReturnsToWaiting() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    // Every probe call returns .noTarget (see MeetController.probe: an
+    // empty FakeRunner always answers "NONE", which is neither length 2
+    // nor an error) — nothing here ever resets the idle clock.
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    #expect(state.deviceState == .armed)
+
+    clock.now += AppState.idleTimeout + 1
+    state.checkIdleDeadline()
+
+    #expect(connection.disconnectIdleCalled)
+    // Not forgotten: the saved identifier survives.
+    #expect(!connection.forgetCalled)
+    #expect(state.hasSavedDevice)
+    // Back to waiting for a press, not idle-with-nothing-saved.
+    #expect(state.deviceState == .searching)
+}
+
+/// A long meeting where nobody presses anything must not disconnect the
+/// device: as long as the probe keeps finding a Target, the deadline keeps
+/// moving out. This proves the reset is real by advancing past the
+/// *original* deadline and showing the disconnect still doesn't fire,
+/// because a later Target sighting pushed a new one further out.
+@Test @MainActor func idleTimeoutDoesNotFireWhileTargetKeepsAppearing() {
+    let connection = FakeDeviceConnection()
+    // "10" decodes as a Target found (mic muted, camera on) — see
+    // MeetController.probe and the existing race tests above for the same
+    // response shape.
+    let runner = FakeRunner(["10", "10"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    queue.flush()  // delivers the immediate probe startProbing() triggers
+    #expect(state.target != nil)  // idleDeadline now (0 + idleTimeout) = idleTimeout
+
+    // Well before the original deadline, a fresh Target sighting pushes it
+    // out again.
+    clock.now += AppState.idleTimeout - 50
+    state.refreshTarget()
+    queue.flush()
+    #expect(state.target != nil)  // idleDeadline now (idleTimeout - 50) + idleTimeout
+
+    // Enough time has passed since arming that the *original* deadline
+    // would have fired by now, but not enough since the Target was last
+    // seen.
+    clock.now += 100
+    state.checkIdleDeadline()
+
+    #expect(!connection.disconnectIdleCalled)
+    #expect(state.deviceState == .armed)
+}
+
+/// Same proof as above, but for button events instead of Target sightings —
+/// someone actively using the device (even with no Target, e.g. testing the
+/// toggle outside a call) must not have it disconnected out from under them.
+@Test @MainActor func idleTimeoutDoesNotFireWhilePressesKeepArriving() {
+    let connection = FakeDeviceConnection()
+    // First response answers the probe that arming triggers immediately
+    // (found on the first browser, so it consumes exactly one runner call);
+    // the second is reserved for the press-triggered perform() call below.
+    let runner = FakeRunner(["00", "OK"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)  // idleDeadline now (0 + idleTimeout)
+    queue.flush()  // delivers the immediate probe
+
+    // Well before the original deadline, a press pushes it out again.
+    clock.now += AppState.idleTimeout - 50
+    connection.onEvent?(.press)  // idleDeadline now (idleTimeout - 50) + idleTimeout
+    queue.flush()
+    #expect(state.lastAction == "Mikrofon: przełączono")
+
+    // Enough time has passed since arming that the *original* deadline
+    // would have fired by now, but not enough since the last press.
+    clock.now += 100
+    state.checkIdleDeadline()
+
+    #expect(!connection.disconnectIdleCalled)
+    #expect(state.deviceState == .armed)
 }
