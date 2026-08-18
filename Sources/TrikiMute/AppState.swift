@@ -15,6 +15,7 @@ final class AppState {
     /// sonda odpowiedziała, choćby brakiem Celu.
     private(set) var bladSondy: String?
     private(set) var ostatniaAkcja: String = "—"
+    private(set) var bladAutostartu: String?
 
     private let polaczenie = TrikiConnection()
     private let controller = MeetController(runner: AppleScriptRunner())
@@ -79,6 +80,14 @@ final class AppState {
             + "kamera \(cel.cameraOff ? "wyłączona" : "włączona")"
     }
 
+    var opisAutostartu: String {
+        switch LoginItem.stan {
+        case .wlaczony: return "✓ Uruchamiaj przy logowaniu"
+        case .wylaczony: return "Uruchamiaj przy logowaniu"
+        case .wymagaZatwierdzenia: return "Uruchamiaj przy logowaniu — zatwierdź w Ustawieniach"
+        }
+    }
+
     func wykonaj(_ action: MeetAction) {
         // NSWorkspace pytamy jeszcze na głównym wątku.
         let przegladarki = BrowserOrder.uporzadkowane()
@@ -100,6 +109,10 @@ final class AppState {
 
     func zapomnijKapsel() {
         polaczenie.forget()
+    }
+
+    func przelaczAutostart() {
+        bladAutostartu = LoginItem.przelacz()
     }
 
     private func opis(_ action: MeetAction, _ wynik: ActionOutcome) -> String {

@@ -22,8 +22,9 @@ struct MenuBarView: View {
 
         Divider()
 
-        Button(LoginItem.wlaczone ? "✓ Uruchamiaj przy logowaniu" : "Uruchamiaj przy logowaniu") {
-            LoginItem.przelacz()
+        Button(state.opisAutostartu) { state.przelaczAutostart() }
+        if let blad = state.bladAutostartu {
+            Text("Autostart: \(blad)")
         }
         Button("Zapomnij Kapsel") { state.zapomnijKapsel() }
         Button("Zakończ") { NSApplication.shared.terminate(nil) }
