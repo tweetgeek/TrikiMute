@@ -213,6 +213,9 @@ Testy ręczne przeprowadzone przez użytkownika, nie przez automat:
 - Ikony w pasku menu i przy pozycjach menu.
 - Rozłączanie i parowanie z wyborem urządzenia.
 - Anulowanie zasypiania — powrót do gotowości bez czekania i bez naciskania.
+- Okno parowania: otwiera się na wierzchu z aplikacji bez ikony w Docku, lista
+  i odliczanie aktualizują się na żywo, liczba naciśnięć czytelna, wiersze
+  czytelnie klikalne, nic nie urywa się przy zmniejszaniu okna.
 
 ## Niezweryfikowane na żywo
 
