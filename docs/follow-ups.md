@@ -156,6 +156,27 @@ odtwarzania. Działa, ale akurat ten kanał nie powinien móc zawieść bezgło�
 
 ## Znane ograniczenia, nie usterki
 
+**Adres karty dopasowywany przez `contains`, bez zakotwiczenia.** Zarówno nowa
+ścieżka, jak i zapasowa uznają kartę za rozmowę, jeśli `meet.google.com`
+pojawia się gdziekolwiek w adresie — więc `evil.com/?x=meet.google.com` też
+pasuje. Zachowanie identyczne jak przed przejściem na adresowanie po procesie,
+więc nie regresja, a konsekwencją jest tylko jedno dodatkowe wykonanie
+JavaScriptu, które zwróci `NONE`. Rozpoznanie odnotowane w recenzji końcowej.
+
+**Przy kilku awariach naraz zapamiętywana jest ostatnia, nie pierwsza.**
+`ScanningMeetBackend` nadpisuje `lastError` przy każdej nieudanej Instancji,
+więc komunikat w menu opisuje przyczynę z **ostatniej** przeszukanej
+przeglądarki. Kolejność szukania stawia na początku tę, na którą użytkownik
+patrzy, więc pierwsza awaria jest zwykle tą istotną — zapamiętywanie pierwszej
+zamiast ostatniej byłoby trafniejsze i kosztuje jedną linijkę. Nabrało wagi
+dopiero wtedy, gdy komunikaty zaczęły faktycznie docierać do użytkownika
+(patrz commit poprawiający `localizedDescription`).
+
+**`meetHost` wstawiany do AppleScriptu bez escapowania.** Sąsiednie
+interpolacje w `MeetScripts.appleScript` przechodzą przez `escaped(...)`, ta
+jedna nie. Bezczynne, dopóki stała nie zawiera cudzysłowa ani odwrotnego
+ukośnika — a zawiera sam adres hosta — ale łamie konwencję własnego pliku.
+
 **Dwie karty Meet naraz.** Skrypt wybiera **pierwszą kartę z kompletem
 przycisków** i na niej poprzestaje. Wcześniejsza wersja tego wpisu twierdziła, że
 wybiera pierwszą kartę z adresem `meet.google.com` i nie próbuje kolejnych — to
