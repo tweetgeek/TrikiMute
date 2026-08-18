@@ -787,7 +787,8 @@ Generuje skrypty sterujące i interpretuje odpowiedzi. Testowane przez podstawio
   - `public protocol ScriptRunner { func run(_ source: String) throws -> String }`
   - `public struct ProbeResult: Equatable, Sendable { public let browser: String; public let micMuted: Bool; public let cameraOff: Bool }`
   - `public enum ActionOutcome: Equatable, Sendable { case performed; case noTarget; case failed(String) }`
-  - `public struct MeetController { public init(runner: ScriptRunner); public func probe(browsers: [String]) -> ProbeResult?; public func perform(_ action: MeetAction, browsers: [String]) -> ActionOutcome }`
+  - `public enum ProbeOutcome: Equatable, Sendable { case target(ProbeResult); case noTarget; case failed(String) }`
+  - `public struct MeetController { public init(runner: ScriptRunner); public func probe(browsers: [String]) -> ProbeOutcome; public func perform(_ action: MeetAction, browsers: [String]) -> ActionOutcome }`
   - `public enum MeetScripts { public static let buttonSelector: String; public static let micIndex: Int; public static let cameraIndex: Int; public static func probeJS() -> String; public static func toggleJS(_ action: MeetAction) -> String; public static func appleScript(browser: String, javascript: String) -> String }`
 
   Task 7 dostarcza produkcyjną implementację `ScriptRunner`, Task 9 konsumuje `ProbeResult` i `ActionOutcome`.
@@ -801,7 +802,10 @@ import Foundation
 import Testing
 @testable import TrikiMuteCore
 
-/// Wykonawca-atrapa: zwraca zaprogramowane odpowiedzi i zapamiętuje skrypty.
+/// Wykonawca-atrapa: oddaje kolejne zaprogramowane odpowiedzi i zapamiętuje
+/// wykonane skrypty. Wartość "THROW" oznacza, że dane wywołanie ma rzucić —
+/// dzięki temu da się odtworzyć sytuację, w której jedna przeglądarka zawodzi,
+/// a druga odpowiada normalnie.
 private final class FakeRunner: ScriptRunner {
     var odpowiedzi: [String]
     private(set) var wykonane: [String] = []
@@ -810,7 +814,9 @@ private final class FakeRunner: ScriptRunner {
 
     func run(_ source: String) throws -> String {
         wykonane.append(source)
-        return odpowiedzi.isEmpty ? "NONE" : odpowiedzi.removeFirst()
+        let odpowiedz = odpowiedzi.isEmpty ? "NONE" : odpowiedzi.removeFirst()
+        if odpowiedz == "THROW" { throw RunnerError() }
+        return odpowiedz
     }
 }
 
@@ -823,7 +829,7 @@ private final class ThrowingRunner: ScriptRunner {
 @Test func sondaZwracaBrakCeluGdyZadnaPrzegladarkaNieMaMeet() {
     let runner = FakeRunner(["NONE", "NONE"])
     let c = MeetController(runner: runner)
-    #expect(c.probe(browsers: ["Google Chrome", "Brave Browser"]) == nil)
+    #expect(c.probe(browsers: ["Google Chrome", "Brave Browser"]) == .noTarget)
     #expect(runner.wykonane.count == 2)
 }
 
@@ -832,22 +838,43 @@ private final class ThrowingRunner: ScriptRunner {
     let runner = FakeRunner(["10"])
     let c = MeetController(runner: runner)
     let wynik = c.probe(browsers: ["Google Chrome"])
-    #expect(wynik == ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false))
+    #expect(wynik == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false)))
 }
 
 @Test func sondaZatrzymujeSieNaPierwszejPrzegladarceZCelem() {
     let runner = FakeRunner(["01", "11"])
     let c = MeetController(runner: runner)
     let wynik = c.probe(browsers: ["Brave Browser", "Google Chrome"])
-    #expect(wynik?.browser == "Brave Browser")
-    #expect(wynik?.micMuted == false)
-    #expect(wynik?.cameraOff == true)
+    #expect(wynik == .target(ProbeResult(browser: "Brave Browser", micMuted: false, cameraOff: true)))
     #expect(runner.wykonane.count == 1)
 }
 
-@Test func sondaPomijaPrzegladarkeKtoraRzucilaBlad() {
+@Test func sondaZglaszaBladGdyWykonawcaRzuca() {
+    // Kluczowe rozróżnienie: awaria nie może udawać braku rozmowy, bo pasek
+    // menu pokazałby wtedy „wszystko gra" przy cofniętej zgodzie na Automation.
     let c = MeetController(runner: ThrowingRunner())
-    #expect(c.probe(browsers: ["Google Chrome"]) == nil)
+    if case .failed = c.probe(browsers: ["Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed")
+    }
+}
+
+@Test func sondaZnajdujeCelMimoBleduPierwszejPrzegladarki() {
+    let runner = FakeRunner(["THROW", "10"])
+    let c = MeetController(runner: runner)
+    let wynik = c.probe(browsers: ["Brave Browser", "Google Chrome"])
+    #expect(wynik == .target(ProbeResult(browser: "Google Chrome", micMuted: true, cameraOff: false)))
+}
+
+@Test func sondaZglaszaBladGdyJednaPrzegladarkaRzucaADrugaNieMaCelu() {
+    let runner = FakeRunner(["THROW", "NONE"])
+    let c = MeetController(runner: runner)
+    if case .failed = c.probe(browsers: ["Brave Browser", "Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
 }
 
 @Test func akcjaZglaszaBrakCelu() {
@@ -869,6 +896,29 @@ private final class ThrowingRunner: ScriptRunner {
     } else {
         Issue.record("Oczekiwano .failed")
     }
+}
+
+@Test func akcjaUdajeSieGdyPierwszaPrzegladarkaRzucaADrugaDziala() {
+    let runner = FakeRunner(["THROW", "OK"])
+    let c = MeetController(runner: runner)
+    #expect(c.perform(.microphone, browsers: ["Brave Browser", "Google Chrome"]) == .performed)
+}
+
+@Test func akcjaZglaszaBladGdyJednaPrzegladarkaRzucaADrugaNieMaCelu() {
+    let runner = FakeRunner(["THROW", "NONE"])
+    let c = MeetController(runner: runner)
+    if case .failed = c.perform(.microphone, browsers: ["Brave Browser", "Google Chrome"]) {
+        // oczekiwane
+    } else {
+        Issue.record("Oczekiwano .failed, nie .noTarget")
+    }
+}
+
+@Test func javascriptZCudzyslowemJestEscapowany() {
+    // appleScript() musi być poprawne dla dowolnego wejścia, a nie polegać na
+    // tym, że generatory trzymają się apostrofów.
+    let s = MeetScripts.appleScript(browser: "Google Chrome", javascript: "return \"x\"")
+    #expect(s.contains("\\\"x\\\""))
 }
 
 @Test func skryptMikrofonuIKameryCelujaWRozneIndeksy() {
@@ -948,17 +998,31 @@ public enum MeetScripts {
         """
     }
 
+    /// Escapuje tekst wstawiany do literału tekstowego AppleScript.
+    /// Bez tego cudzysłów rozerwałby łańcuch, a odwrotny ukośnik zostałby
+    /// zjedzony przez AppleScript, zanim JavaScript zdążyłby go zobaczyć.
+    /// Kolejność ma znaczenie: najpierw ukośniki, potem cudzysłowy.
+    private static func escapuj(_ tekst: String) -> String {
+        tekst
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     /// Opakowuje JS w skrypt szukający Celu wśród kart danej przeglądarki.
     /// Karta nie musi być aktywna ani na wierzchu — to jest cały sens Apple
     /// Events zamiast skrótu klawiszowego.
+    ///
+    /// Oba wstawiane teksty są escapowane, żeby funkcja była poprawna dla
+    /// dowolnego wejścia, a nie tylko dla generatorów trzymających się
+    /// apostrofów.
     public static func appleScript(browser: String, javascript: String) -> String {
         """
-        tell application "\(browser)"
+        tell application "\(escapuj(browser))"
             if it is not running then return "NONE"
             repeat with w in windows
                 repeat with t in tabs of w
                     if URL of t contains "meet.google.com" then
-                        set wynik to execute t javascript "\(javascript)"
+                        set wynik to execute t javascript "\(escapuj(javascript))"
                         if wynik is not "NONE" then return wynik
                     end if
                 end repeat
@@ -983,7 +1047,7 @@ public protocol ScriptRunner {
     func run(_ source: String) throws -> String
 }
 
-/// Wynik sondy: gdzie jest Cel i w jakim jest stanie.
+/// Gdzie jest Cel i w jakim jest stanie.
 public struct ProbeResult: Equatable, Sendable {
     public let browser: String
     public let micMuted: Bool
@@ -1004,6 +1068,16 @@ public enum ActionOutcome: Equatable, Sendable {
     case failed(String)
 }
 
+/// Wynik sondy. To samo rozróżnienie co w `ActionOutcome` i z tego samego
+/// powodu: gdyby awaria zwracała „brak Celu", pasek menu twierdziłby, że
+/// wszystko gra, podczas gdy w rzeczywistości cofnięto zgodę na Automation
+/// albo wyłączono wykonywanie JavaScriptu w przeglądarce.
+public enum ProbeOutcome: Equatable, Sendable {
+    case target(ProbeResult)
+    case noTarget
+    case failed(String)
+}
+
 /// Steruje mikrofonem i kamerą w Celu.
 public struct MeetController {
     private let runner: ScriptRunner
@@ -1013,19 +1087,31 @@ public struct MeetController {
     }
 
     /// Szuka Celu w podanych przeglądarkach, w kolejności. Zwraca stan
-    /// pierwszej karty, w której jest komplet przycisków, albo `nil`.
-    public func probe(browsers: [String]) -> ProbeResult? {
+    /// pierwszej karty, w której jest komplet przycisków; jeśli żadna nie ma
+    /// Celu, rozróżnia „nigdzie nie ma rozmowy" od „nie dało się sprawdzić".
+    public func probe(browsers: [String]) -> ProbeOutcome {
+        var ostatniBlad: String?
         for browser in browsers {
-            guard let odpowiedz = wykonaj(MeetScripts.probeJS(), in: browser),
-                  odpowiedz.count == 2 else { continue }
-            let znaki = Array(odpowiedz)
-            return ProbeResult(
+            let skrypt = MeetScripts.appleScript(
                 browser: browser,
-                micMuted: znaki[0] == "1",
-                cameraOff: znaki[1] == "1"
+                javascript: MeetScripts.probeJS()
             )
+            do {
+                let odpowiedz = try runner.run(skrypt)
+                // Sentinel „NONE" ma cztery znaki, więc odpada tu naturalnie.
+                guard odpowiedz.count == 2 else { continue }
+                let znaki = Array(odpowiedz)
+                return .target(ProbeResult(
+                    browser: browser,
+                    micMuted: znaki[0] == "1",
+                    cameraOff: znaki[1] == "1"
+                ))
+            } catch {
+                ostatniBlad = String(describing: error)
+            }
         }
-        return nil
+        if let ostatniBlad { return .failed(ostatniBlad) }
+        return .noTarget
     }
 
     /// Wykonuje Akcję w pierwszej przeglądarce, w której jest Cel.
@@ -1044,24 +1130,18 @@ public struct MeetController {
         if let ostatniBlad { return .failed(ostatniBlad) }
         return .noTarget
     }
-
-    private func wykonaj(_ javascript: String, in browser: String) -> String? {
-        let skrypt = MeetScripts.appleScript(browser: browser, javascript: javascript)
-        guard let odpowiedz = try? runner.run(skrypt), odpowiedz != "NONE" else { return nil }
-        return odpowiedz
-    }
 }
 ```
 
 - [ ] **Step 5: Uruchom testy i potwierdź, że przechodzą**
 
 Run: `swift test --filter MeetControllerTests`
-Expected: PASS, 10 testów.
+Expected: PASS, 15 testów.
 
 - [ ] **Step 6: Uruchom cały zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 25 testów (7 + 8 + 10).
+Expected: PASS, 30 testów (7 + 8 + 15).
 
 - [ ] **Step 7: Commit**
 
@@ -1522,7 +1602,7 @@ Zbiera stan w jedno źródło prawdy i pokazuje go w pasku menu.
 
 **Interfaces:**
 - Consumes: `TrikiConnection`, `PolaczenieKapsla` z Task 8; `MeetController`, `ProbeResult`, `ActionOutcome` z Task 6; `BrowserOrder` z Task 7.
-- Produces: `@MainActor @Observable final class AppState` z polami `stanKapsla`, `bateria`, `rssi`, `cel`, `ostatniaAkcja`, `nazwaIkony` i metodami `func wykonaj(_ action: MeetAction)`, `func zapomnijKapsel()`. Task 10 podpina się pod `wykonaj`.
+- Produces: `@MainActor @Observable final class AppState` z polami `stanKapsla`, `bateria`, `rssi`, `cel`, `bladSondy`, `ostatniaAkcja`, `nazwaIkony` i metodami `func wykonaj(_ action: MeetAction)`, `func zapomnijKapsel()`. Task 10 podpina się pod `wykonaj`.
 
 - [ ] **Step 1: Napisz stan aplikacji**
 
@@ -1541,6 +1621,10 @@ final class AppState {
     private(set) var bateria: Int?
     private(set) var rssi: Int?
     private(set) var cel: ProbeResult?
+    /// Ustawiane, gdy sonda w ogóle nie mogła sprawdzić Celu — najczęściej brak
+    /// zgody na Automation albo wyłączone wykonywanie JavaScriptu. Puste, gdy
+    /// sonda odpowiedziała, choćby brakiem Celu.
+    private(set) var bladSondy: String?
     private(set) var ostatniaAkcja: String = "—"
 
     private let polaczenie = TrikiConnection()
@@ -1570,7 +1654,9 @@ final class AppState {
         switch stanKapsla {
         case .blad: return "exclamationmark.triangle"
         case .rozlaczony, .szukam: return "circle.dotted"
-        case .uzbrojony: return cel?.micMuted == true ? "mic.slash.fill" : "mic.fill"
+        case .uzbrojony:
+            if bladSondy != nil { return "exclamationmark.triangle" }
+            return cel?.micMuted == true ? "mic.slash.fill" : "mic.fill"
         }
     }
 
@@ -1584,6 +1670,7 @@ final class AppState {
     }
 
     var opisCelu: String {
+        if let bladSondy { return "Nie mogę sprawdzić Celu: \(bladSondy)" }
         guard let cel else { return "Brak Celu — nie ma czego wyciszyć" }
         return "\(cel.browser): mikrofon \(cel.micMuted ? "wyciszony" : "aktywny"), "
             + "kamera \(cel.cameraOff ? "wyłączona" : "włączona")"
@@ -1625,12 +1712,25 @@ final class AppState {
         sonda = nil
         cel = nil
         rssi = nil
+        bladSondy = nil
     }
 
     /// Jeden przebieg sondy: gdzie jest Cel, w jakim jest stanie i jak mocny
     /// jest sygnał Kapsla. Siła sygnału przychodzi asynchronicznie przez onRSSI.
     private func odswiezCel() {
-        cel = controller.probe(browsers: BrowserOrder.uporzadkowane())
+        switch controller.probe(browsers: BrowserOrder.uporzadkowane()) {
+        case .target(let wynik):
+            cel = wynik
+            bladSondy = nil
+        case .noTarget:
+            cel = nil
+            bladSondy = nil
+        case .failed(let opis):
+            // Awaria sondy nie może udawać braku rozmowy — pasek menu ma
+            // pokazać przyczynę, a nie „wszystko gra".
+            cel = nil
+            bladSondy = opis
+        }
         polaczenie.odczytajRSSI()
     }
 }
@@ -1705,7 +1805,7 @@ Oczekiwane:
 - bez Kapsla ikona jest wykropkowanym kółkiem, a menu mówi „naciśnij przycisk, żeby go obudzić",
 - po Uzbrojeniu ikona zmienia się w mikrofon, a menu pokazuje poziom baterii; siła sygnału pojawia się dopiero po pierwszym przebiegu sondy, czyli razem z Celem,
 - po otwarciu rozmowy menu pokazuje przeglądarkę i oba stany, a ikona przekreśla się przy wyciszeniu — **także wtedy, gdy wyciszysz się myszką w Meet** (potwierdza, że sonda odczytuje rzeczywistość, a nie własne założenia),
-- po zamknięciu karty menu wraca do „Brak Celu" w ciągu ~3 sekund,
+- po zamknięciu karty menu wraca do „Brak Celu" w ciągu ~3 sekund, a po cofnięciu zgody na Automation pokazuje przyczynę zamiast „Brak Celu",
 - „Zapomnij Kapsel" wraca do stanu szukania.
 
 - [ ] **Step 5: Commit**
@@ -1933,7 +2033,7 @@ naciśnięciu przycisku bez żadnej ingerencji.
 - [ ] **Step 5: Uruchom pełny zestaw testów**
 
 Run: `swift test`
-Expected: PASS, 25 testów.
+Expected: PASS, 30 testów.
 
 - [ ] **Step 6: Commit**
 
