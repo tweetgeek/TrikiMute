@@ -3,6 +3,16 @@ import Testing
 import TrikiMuteCore
 @testable import TrikiMute
 
+/// Fixed stand-in for `BrowserOrder.ordered()`, passed to every `AppState`
+/// built in this file. Without it, `AppState` would fall back to its
+/// production default and read the real `NSWorkspace.shared.frontmostApplication`
+/// — whichever browser happens to be frontmost while the suite runs would
+/// then reorder this list out from under the tests, and any assertion that
+/// depends on which browser answered first (e.g. `ProbeResult.browser`)
+/// would fail or pass for a reason that has nothing to do with what it's
+/// testing. See `docs/follow-ups.md`.
+private let testBrowserOrder = ["Google Chrome", "Brave Browser"]
+
 /// Fake `TrikiConnection`: lets tests call `onState`/`onEvent` directly,
 /// without real CoreBluetooth.
 @MainActor
@@ -132,7 +142,7 @@ private final class TestQueue: ScriptQueue {
     let runner = FakeRunner(["10"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
     #expect(queue.runCount == 1)
@@ -154,7 +164,7 @@ private final class TestQueue: ScriptQueue {
     let runner = FakeRunner(["10", "01"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
     #expect(queue.runCount == 1)
@@ -180,7 +190,7 @@ private final class TestQueue: ScriptQueue {
     let runner = FakeRunner(["10"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
     queue.flush()
@@ -204,7 +214,7 @@ private final class TestQueue: ScriptQueue {
     let runner = FakeRunner(["THROW", "THROW", "OK", "10"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
     queue.flush()
@@ -226,7 +236,7 @@ private final class TestQueue: ScriptQueue {
     let runner = FakeRunner(["OK"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.perform(.microphone)
     state.perform(.camera)
@@ -276,7 +286,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
 
@@ -296,7 +306,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
 
@@ -328,7 +338,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -351,7 +361,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     let id = UUID()
@@ -376,7 +386,7 @@ private func chooseAndArmCandidate(
     let runner = FakeRunner(["OK"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onEvent?(.press)
 
@@ -396,7 +406,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     let id = UUID()
@@ -430,7 +440,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     let id = UUID()
@@ -472,7 +482,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -503,7 +513,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming(_, let required, let resetBeforeDrop) = state.pairing else {
@@ -551,7 +561,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     let id = UUID()
@@ -603,7 +613,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.error("Bluetooth jest wyłączony"))
     connection.startPairingResult = false
@@ -626,7 +636,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.hasSavedDevice = true
     connection.onState?(.error("Bluetooth jest wyłączony"))
@@ -638,7 +648,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     #expect(connection.startPairingCallCount == 1)
@@ -662,7 +672,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming(_, let required, _) = state.pairing else {
@@ -692,7 +702,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     #expect(state.pairing == .searching([]))
@@ -716,7 +726,7 @@ private func chooseAndArmCandidate(
     let connection = FakeDeviceConnection()
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     connection.onState?(.armed)
     #expect(state.iconName == "mic.fill")
@@ -735,7 +745,7 @@ private func chooseAndArmCandidate(
     let runner = FakeRunner(["OK"])
     let controller = MeetController(runner: runner)
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.startPairing()
     let id = UUID()
@@ -767,7 +777,7 @@ private func chooseAndArmCandidate(
     connection.cancelPairingEmitsDisconnected = true
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {
@@ -790,7 +800,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     // Force a drop so droppedDuringAttempt is genuinely true going into the failure.
@@ -836,7 +846,7 @@ private func chooseAndArmCandidate(
     connection.hasSavedDevice = true
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
 
     state.forgetDevice()
 
@@ -863,7 +873,7 @@ private func chooseAndArmCandidate(
     let controller = MeetController(runner: FakeRunner([]))
     let queue = TestQueue()
     let clock = FakeClock()
-    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
 
     _ = chooseAndArmCandidate(state, connection)
     guard case .confirming = state.pairing else {

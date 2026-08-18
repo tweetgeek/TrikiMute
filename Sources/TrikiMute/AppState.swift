@@ -73,6 +73,16 @@ final class AppState {
     /// `ProcessInfo.processInfo.systemUptime`, never `Date()` — see the note
     /// on monotonic time in `TrikiConnection`.
     private let now: () -> TimeInterval
+    /// Source of the browser polling order, injected so tests can supply a
+    /// fixed list instead of `BrowserOrder.ordered()` reading the real
+    /// `NSWorkspace.shared.frontmostApplication` — a test run with a browser
+    /// frontmost would otherwise see the list reorder out from under it and
+    /// fail for a reason that has nothing to do with what it's testing (see
+    /// `docs/follow-ups.md`). Production default is `BrowserOrder.ordered()`,
+    /// called synchronously at each call site — see the note there on why
+    /// that has to happen on the main thread, before dispatching to
+    /// `scriptQueue`.
+    private let browserOrder: () -> [String]
     private var probeTimer: Timer?
     private var probeInFlight = false
     /// Non-nil for the duration of `.confirming`. Owns the press count and
@@ -207,11 +217,12 @@ final class AppState {
     /// the probe and Actions don't step on each other. State is only mutated
     /// after returning to the main thread.
     ///
-    /// `connection`, `controller`, and `scriptQueue` are initializer
-    /// parameters solely so that tests can substitute doubles for real
-    /// CoreBluetooth, AppleScript, and background threads. The defaults
-    /// reproduce the existing production wiring, so `AppState()` in
-    /// `TrikiMuteApp.swift` doesn't need to change.
+    /// `connection`, `controller`, `scriptQueue`, `now`, and `browserOrder`
+    /// are initializer parameters solely so that tests can substitute doubles
+    /// for real CoreBluetooth, AppleScript, background threads, wall-clock
+    /// time, and `NSWorkspace`. The defaults reproduce the existing
+    /// production wiring, so `AppState()` in `TrikiMuteApp.swift` doesn't need
+    /// to change.
     ///
     /// `connection` defaults to `nil` rather than `TrikiConnection()`
     /// directly: parameter default expressions don't inherit the
@@ -224,13 +235,15 @@ final class AppState {
         scriptQueue: any ScriptQueue = DefaultScriptQueue(
             backgroundQueue: DispatchQueue(label: "pl.tweetgeek.trikimute.skrypty")
         ),
-        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        browserOrder: @escaping () -> [String] = { BrowserOrder.ordered() }
     ) {
         let connection = connection ?? TrikiConnection()
         self.connection = connection
         self.controller = controller
         self.scriptQueue = scriptQueue
         self.now = now
+        self.browserOrder = browserOrder
         connection.onState = { [weak self] state in
             guard let self else { return }
             deviceState = state
@@ -359,8 +372,9 @@ final class AppState {
             return
         }
         actionInFlight = true
-        // NSWorkspace is still queried on the main thread here.
-        let browsers = BrowserOrder.ordered()
+        // NSWorkspace is still queried on the main thread here (in production;
+        // see the `browserOrder` doc comment for the injected-default shape).
+        let browsers = browserOrder()
         let controller = self.controller
         scriptQueue.run(
             background: { controller.perform(action, browsers: browsers) },
@@ -747,7 +761,7 @@ final class AppState {
         probePending = false
         probeGeneration += 1
         let generation = probeGeneration
-        let browsers = BrowserOrder.ordered()
+        let browsers = browserOrder()
         let controller = self.controller
         connection.readRSSI()
         scriptQueue.run(

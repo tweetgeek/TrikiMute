@@ -30,11 +30,20 @@ Pozostałe dwa to sensowne pokrycie, ale przeszłyby również bez niej — cał
 weryfikacji tej usterki spoczywa na jednym teście.
 
 
-**Testy `AppState` czytają prawdziwy `NSWorkspace`.** Przez
-`BrowserOrder.uporzadkowane()` sięgają po aplikację na wierzchu. Gdyby przy
-uruchamianiu testów była nią przeglądarka, kolejność listy by się przestawiła
-i test padłby bez powodu. Uruchamiane z terminala są bezpieczne, bo na wierzchu
-jest terminal. Naprawa: wstrzyknąć listę przeglądarek zamiast czytać system.
+**Zrobione: testy `AppState` czytały prawdziwy `NSWorkspace`.** Przez
+`BrowserOrder.ordered()` sięgały po aplikację na wierzchu. Gdy przy
+uruchamianiu testów była nią przeglądarka, kolejność listy się przestawiała
+i `secondProbeQueuesAsPendingNotParallel` padał bez powodu — dokładnie tak,
+jak ten wpis przewidywał. Uzasadnienie odłożenia było błędne: „uruchamiane
+z terminala są bezpieczne, bo na wierzchu jest terminal" to założenie o
+układzie okien akurat tego dewelopera, a nie własność kodu — nic w kodzie
+nie gwarantowało, że terminal będzie na wierzchu. Naprawione przez wstrzyknięcie
+kolejności przeglądarek jako `browserOrder: () -> [String]`, tym samym wzorcem
+co pozostali współpracownicy `AppState` (`connection`, `controller`,
+`scriptQueue`, `now`) — domyślnie `{ BrowserOrder.ordered() }`, więc
+produkcyjne miejsce wywołania (`AppState()` w `TrikiMuteApp.swift`) się nie
+zmieniło, a każdy `AppState` w `AppStateTests.swift` dostaje teraz stałą
+`testBrowserOrder`.
 
 **Sonda odpytuje dwie przeglądarki co 3 sekundy bez końca.** Gdy Celu nie ma,
 ikona i tak nie ma czego pokazywać, więc rzadszy takt nic nie kosztuje. 3 s przy
