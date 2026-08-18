@@ -202,3 +202,158 @@ private final class TestQueue: ScriptQueue {
     queue.flush()
     #expect(state.lastAction == "Mikrofon: przełączono")
 }
+
+// MARK: - Pairing
+
+/// A clock the test drives by hand — `AppState` never reads `Date()` or a
+/// real `ProcessInfo.processInfo.systemUptime` in tests, so a pairing
+/// deadline can be crossed deterministically without sleeping.
+@MainActor
+private final class FakeClock {
+    var now: TimeInterval = 0
+}
+
+@Test @MainActor func pressDuringConfirmationDoesNotReachMeet() {
+    let connection = FakeDeviceConnection()
+    // If perform() ran, this response would be consumed — proof by
+    // contradiction that queue.runCount == 0 below means it didn't.
+    let runner = FakeRunner(["OK"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+
+    guard case .confirming = state.pairing else {
+        Issue.record("expected .confirming after choosing a candidate")
+        return
+    }
+
+    connection.onEvent?(.press)
+
+    #expect(queue.runCount == 0)
+    #expect(state.lastAction == "—")
+}
+
+@Test @MainActor func fullPressCountConfirmsAndPersists() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+
+    guard case .confirming(_, let required) = state.pairing else {
+        Issue.record("expected .confirming after choosing a candidate")
+        return
+    }
+
+    for _ in 0..<required {
+        connection.onEvent?(.press)
+    }
+
+    #expect(state.pairing == .inactive)
+    #expect(connection.confirmPairingCalled)
+    // Presses spent on confirmation must never have reached the script queue.
+    #expect(queue.runCount == 0)
+}
+
+@Test @MainActor func pairingTimeoutFailsWithoutPersisting() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+    // The candidate connects fine this time — the user simply doesn't press
+    // enough times before the deadline.
+    connection.onState?(.armed)
+
+    clock.now += AppState.pairingTimeout + 1
+    state.checkPairingDeadline()
+
+    guard case .failed = state.pairing else {
+        Issue.record("expected .failed after the deadline passed")
+        return
+    }
+    #expect(!connection.confirmPairingCalled)
+}
+
+@Test @MainActor func cancelDuringPairingLeavesSavedDeviceUntouched() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -40)])
+    state.choosePairingCandidate(id)
+
+    state.cancelPairing()
+
+    #expect(state.pairing == .inactive)
+    #expect(connection.cancelPairingCalled)
+    // The only method that would overwrite the saved identifier was never called.
+    #expect(!connection.confirmPairingCalled)
+}
+
+@Test @MainActor func pressOutsidePairingStillTogglesMic() {
+    let connection = FakeDeviceConnection()
+    let runner = FakeRunner(["OK"])
+    let controller = MeetController(runner: runner)
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue)
+
+    connection.onEvent?(.press)
+
+    #expect(queue.runCount == 1)
+    queue.flush()
+    #expect(state.lastAction == "Mikrofon: przełączono")
+}
+
+/// The ghost-candidate hang found in Task 2's review: a capsule that stops
+/// advertising mid-scan stays in the list, and `connect()` on it never times
+/// out on its own. This pins that choosing it now fails cleanly — within the
+/// same bounded deadline used for press confirmation — instead of leaving
+/// pairing stuck on "searching" forever.
+@Test @MainActor func candidateThatNeverConnectsFailsWithoutHanging() {
+    let connection = FakeDeviceConnection()
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now })
+
+    state.startPairing()
+    let id = UUID()
+    connection.onCandidates?([DeviceCandidate(id: id, name: "Kapsel-A", rssi: -60)])
+    state.choosePairingCandidate(id)
+    // Deliberately no connection.onState?(.armed) — the candidate vanished
+    // and CoreBluetooth's connect() never calls back at all.
+
+    clock.now += AppState.pairingTimeout + 1
+    state.checkPairingDeadline()
+
+    guard case .failed = state.pairing else {
+        Issue.record("expected .failed, not stuck in .confirming or .searching")
+        return
+    }
+    #expect(connection.cancelPairingCalled)
+
+    // No hang: pairing can be started again right away.
+    state.startPairing()
+    #expect(state.pairing == .searching([]))
+    #expect(connection.startPairingCalled)
+}

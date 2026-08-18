@@ -173,13 +173,56 @@ osiągnięcie Gotowości. Reszta rozmowy działa normalnie.
 Rozwiązanie odrzucone: stałe połączenie od logowania. Dawałoby natychmiastową
 gotowość kosztem ciągłego strumienia 104 Hz przez cały dzień roboczy.
 
-**Zestawianie połączenia.** Po pierwszym połączeniu identyfikator Kapsla jest
-zapamiętywany, a aplikacja utrzymuje zawieszone `connect()` na pobranym
-`CBPeripheral` — CoreBluetooth podniesie połączenie samo, gdy tylko Kapsel się
-odezwie, bez ciągłego skanowania po stronie aplikacji. Skanowanie jest
-potrzebne wyłącznie przy pierwszym uruchomieniu.
+**Zestawianie połączenia.** Po potwierdzonym parowaniu (niżej) identyfikator
+Kapsla jest zapamiętywany, a aplikacja utrzymuje zawieszone `connect()` na
+pobranym `CBPeripheral` — CoreBluetooth podniesie połączenie samo, gdy tylko
+Kapsel się odezwie, bez ciągłego skanowania po stronie aplikacji. Skanowanie
+jest potrzebne wyłącznie w trakcie samego parowania.
 
 Rozłączenie w trakcie rozmowy jest natychmiast widoczne w pasku menu.
+
+**Parowanie — z wyboru, nie automatyczne.** Wcześniejsza wersja tej sekcji
+opisywała parowanie jako w pełni automatyczne: aplikacja łączyła się z
+pierwszym urządzeniem, którego nazwa zawierała „triki". To założenie nie
+przetrwało dwóch Kapsli naraz — reklamy BLE nie są zsynchronizowane, więc
+wybór pierwszego napotkanego był losowy, a nazwa reklamowana przez urządzenie
+(zawierająca jego numer seryjny) i tak nic nie mówi trzymającemu go
+człowiekowi. Model dziś:
+
+1. Użytkownik uruchamia parowanie z paska menu — jest to naturalny pierwszy
+   krok bez zapisanego urządzenia, a przy już zapisanym służy do jego zmiany
+   (zastępuje dawny osobny „Zapomnij Kapsel" — wybranie i potwierdzenie
+   nowego urządzenia jest nadzbiorem zapominania starego).
+2. `TrikiConnection` przełącza się w tryb rozpoznawania: skanuje i zgłasza
+   pełną listę kandydatów (nazwa, RSSI) do `AppState`, zamiast łączyć się
+   z pierwszym napotkanym. Dotychczasowe zapisane urządzenie, jeśli istnieje,
+   działa nietknięte przez cały czas przeglądania listy.
+3. Wybranie kandydata z listy łączy się z nim i uzbraja go normalną ścieżką,
+   ale **nie zapisuje** jeszcze identyfikatora. Zamiast tego aplikacja losuje
+   liczbę naciśnięć z zakresu 2–5 i pokazuje polecenie z tą konkretną liczbą.
+   Naciśnięcia w tej fazie potwierdzają wybór i **nie trafiają do Meet** —
+   inaczej sama próba sparowania właściwego Kapsla wyciszałaby przypadkowo
+   mikrofon na dotychczasowym urządzeniu.
+4. Komplet naciśnięć na wybranym urządzeniu zapisuje jego identyfikator jako
+   Kapsel na stałe; od tej pory łączenie wraca do modelu Uzbrojenia opisanego
+   wyżej.
+5. Cały krok wyboru i potwierdzenia jest ograniczony jednym wspólnym czasem
+   (dziś: 20 s), liczonym od wybrania kandydata. To ograniczenie zamyka dwa
+   różne tryby awarii jednym mechanizmem: użytkownika, który naciska za
+   wolno lub za mało razy, **oraz** kandydata, który przestał się reklamować
+   między wyświetleniem listy a kliknięciem — `connect()` w CoreBluetooth nie
+   ma własnego limitu czasu i bez tej granicy zawiesiłby parowanie na
+   „szukam" bez wyjścia poza jego przerwaniem. Ponieważ w obu przypadkach
+   żadne naciśnięcie nie nadejdzie przed upływem czasu, jeden odliczany
+   termin — bez osobnej fazy „łączę się" i bez usuwania nieaktualnych
+   kandydatów z listy — wystarcza, by żaden z nich nie zawiesił aplikacji.
+   Po upływie czasu faza wraca do listy kandydatów z czytelnym komunikatem.
+6. Parowanie da się przerwać na każdym etapie; przerwanie zawsze zostawia
+   dotychczasowe urządzenie dokładnie w takim stanie, w jakim było przed
+   `startPairing()`.
+
+Sonda Meet (niżej) nie działa w trakcie parowania — nie ma czego odpytywać,
+a odpytywanie przeglądarek konkurowałoby o tę samą kolejkę skryptów.
 
 ## Sprzężenie zwrotne
 
@@ -210,6 +253,9 @@ Rozwijane menu:
 - poziom baterii (procent) i RSSI
 - wykryty Cel (przeglądarka i stan) albo jego brak
 - ostatnia Akcja
+- parowanie: pozycja startowa poza sesją; w trakcie — lista kandydatów
+  z siłą sygnału, albo polecenie naciśnięć z licznikiem pozostałych, albo
+  komunikat o niepowodzeniu; zawsze z opcją przerwania
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
 - akcja testowa (przełącz mikrofon bez Kapsla)
 - wyjście
@@ -250,8 +296,17 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   wygenerowany JavaScript i AppleScript oraz interpretację odpowiedzi,
   bez uruchamiania przeglądarki
 - wybór Celu: reguła pierwszeństwa przy wielu kandydatach
+- `PairingConfirmation`: zliczanie naciśnięć, tłumienie Przytrzymania, upływ
+  czasu, stan końcowy po potwierdzeniu i po upływie czasu
+- `AppState` w trakcie parowania (przez wstrzykiwane atrapy, bez sprzętu):
+  naciśnięcie w fazie potwierdzania nie trafia do Meet, komplet naciśnięć
+  zapisuje identyfikator i kończy parowanie, upływ czasu kończy się porażką
+  bez zapisu, przerwanie zostawia dotychczasowe urządzenie nietknięte,
+  naciśnięcie poza parowaniem działa jak dotąd, a kandydat, który nie
+  odpowiada w wyznaczonym czasie, kończy się porażką zamiast zawieszeniem
 
-Test ręczny: warstwa CoreBluetooth na Kapslu oraz Akcje w prawdziwym Meet.
+Test ręczny: warstwa CoreBluetooth na Kapslu, Akcje w prawdziwym Meet oraz
+pełny przebieg parowania (jeden i, jeśli dostępne, dwa Kapsle naraz).
 
 ## Niewiadome do rozstrzygnięcia pomiarem
 
