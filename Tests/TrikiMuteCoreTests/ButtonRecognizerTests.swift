@@ -76,6 +76,20 @@ private func odtworz(
     #expect(drugie.isEmpty)
 }
 
+@Test func przytrzymanieStlumionePrzezCooldownWychodziPozniej() {
+    // Konfiguracja patologiczna: cooldown dłuższy niż debounce + próg.
+    // Bez poprawki flaga holdZgloszony zapalałaby się mimo stłumienia
+    // i Przytrzymanie przepadłoby bezpowrotnie.
+    var r = ButtonRecognizer(tuning: .init(hold: 0.4, debounce: 0.03, cooldown: 0.8))
+    _ = odtworz(&r, wcisniety: false, przez: 0.2, od: 0.0)
+    _ = odtworz(&r, wcisniety: true, przez: 0.2, od: 0.2)
+    let pierwsze = odtworz(&r, wcisniety: false, przez: 0.1, od: 0.4)
+    #expect(pierwsze == [.press])
+    // Próg mija w 0,9 s, ale cooldown po Naciśnięciu trwa do 1,2 s.
+    let wtrakcie = odtworz(&r, wcisniety: true, przez: 1.2, od: 0.5)
+    #expect(wtrakcie == [.hold])
+}
+
 @Test func ciaglyStanPuszczonyNieDajeZdarzen() {
     var r = ButtonRecognizer()
     let zdarzenia = odtworz(&r, wcisniety: false, przez: 5.0, od: 0.0)

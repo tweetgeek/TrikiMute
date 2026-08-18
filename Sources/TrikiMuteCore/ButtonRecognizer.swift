@@ -55,8 +55,12 @@ public struct ButtonRecognizer {
 
         guard wcisniety, !holdZgloszony else { return nil }
         guard sample.timestamp - poczatekWcisniecia >= tuning.hold else { return nil }
+        // Flagę zapalamy dopiero po faktycznej emisji. Gdyby zapalała się
+        // wcześniej, Przytrzymanie stłumione przez cooldown przepadałoby
+        // bezpowrotnie zamiast wyjść z opóźnieniem.
+        guard let zdarzenie = wyemituj(.hold, at: sample.timestamp) else { return nil }
         holdZgloszony = true
-        return wyemituj(.hold, at: sample.timestamp)
+        return zdarzenie
     }
 
     private mutating func wyemituj(_ event: ButtonEvent, at timestamp: TimeInterval) -> ButtonEvent? {
