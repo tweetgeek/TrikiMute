@@ -26,6 +26,12 @@ final class AppleScriptRunner: ScriptRunner {
                 opis: info[NSAppleScript.errorMessage] as? String ?? "nieznany błąd"
             )
         }
-        return wynik.stringValue ?? "NONE"
+        guard let tekst = wynik.stringValue else {
+            // Brak wartości tekstowej to anomalia, nie odpowiedź. Zwrócenie
+            // "NONE" udawałoby brak rozmowy, czyli mylnie zapewniałoby,
+            // że wszystko jest w porządku.
+            throw Blad(kod: 0, opis: "Skrypt nie zwrócił wartości tekstowej")
+        }
+        return tekst
     }
 }
