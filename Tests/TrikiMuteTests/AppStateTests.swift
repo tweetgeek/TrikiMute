@@ -11,13 +11,22 @@ private final class FakeDeviceConnection: DeviceConnection {
     var onState: ((DeviceState) -> Void)?
     var onBattery: ((Int) -> Void)?
     var onRSSI: ((Int) -> Void)?
+    var onCandidates: (([DeviceCandidate]) -> Void)?
 
     private(set) var startCalled = false
     private(set) var forgetCalled = false
+    private(set) var startPairingCalled = false
+    private(set) var cancelPairingCalled = false
+    private(set) var confirmPairingCalled = false
+    private(set) var chosenID: UUID?
 
     func start() { startCalled = true }
     func readRSSI() {}
     func forget() { forgetCalled = true }
+    func startPairing() { startPairingCalled = true }
+    func choose(_ id: UUID) { chosenID = id }
+    func cancelPairing() { cancelPairingCalled = true }
+    func confirmPairing() { confirmPairingCalled = true }
 }
 
 private struct RunnerError: Error {}
