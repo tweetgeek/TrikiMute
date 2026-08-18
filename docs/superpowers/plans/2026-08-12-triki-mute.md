@@ -22,7 +22,7 @@
 - Oba cele używają trybu języka Swift 5 (`swiftLanguageMode(.v5)`). Ścisła współbieżność Swift 6 kłóci się z delegatami CoreBluetooth i nie wnosi tu wartości.
 - Wszystkie stałe czasowe rozpoznawania przycisku żyją w jednym miejscu: `ButtonRecognizer.Tuning`.
 - Selektory DOM żyją wyłącznie w `MeetScripts`. Nigdzie indziej nie wolno ich powtarzać.
-- Commity po polsku, w konwencji `typ(zakres): opis`.
+- Komunikaty commitów po angielsku, w konwencji `type(scope): description`. Zakres jest obowiązkowy. Reszta projektu — kod, komentarze, dokumentacja, interfejs — pozostaje po polsku.
 
 ---
 
@@ -94,7 +94,7 @@ Utwórz `docs/findings/2026-08-12-meet-dom.md` zawierający: pełne wyjście z k
 
 ```bash
 git add docs/findings/2026-08-12-meet-dom.md
-git commit -m "docs(spike): struktura przyciskow Meet i obsluga Apple Events w Chrome i Brave"
+git commit -m "docs(spike): Meet DOM structure and Apple Events support"
 ```
 
 ---
@@ -160,7 +160,7 @@ Utwórz `docs/findings/2026-08-12-kapsel.md` z: potwierdzeniem flagi przycisku, 
 
 ```bash
 git add docs/findings/2026-08-12-kapsel.md
-git commit -m "docs(spike): zmierzone zachowanie Kapsla - sen, wybudzanie, bateria"
+git commit -m "docs(spike): measured device behaviour — sleep, wake, battery drain"
 ```
 
 ---
@@ -347,7 +347,7 @@ Expected: w prawym górnym rogu ekranu pojawia się ikona przekreślonego mikrof
 
 ```bash
 git add Package.swift Sources scripts
-git commit -m "feat: szkielet pakietu SPM, skrypt budujacy i ikona w pasku menu"
+git commit -m "feat(build): SPM skeleton, build script and menu bar icon"
 ```
 
 ---
@@ -554,7 +554,7 @@ Expected: PASS, 7 testów.
 
 ```bash
 git add Package.swift Sources/TrikiMuteCore/Models.swift Sources/TrikiMuteCore/FrameParser.swift Tests/TrikiMuteCoreTests/FrameParserTests.swift
-git commit -m "feat(core): parser ramek IMU wyciagajacy stan przycisku Kapsla"
+git commit -m "feat(core): IMU frame parser extracting button state"
 ```
 
 ---
@@ -749,7 +749,7 @@ Expected: PASS, 7 testów.
 
 ```bash
 git add Sources/TrikiMuteCore/ButtonRecognizer.swift Tests/TrikiMuteCoreTests/ButtonRecognizerTests.swift
-git commit -m "feat(core): rozpoznawanie Nacisniecia i Przytrzymania ze zbocz przycisku"
+git commit -m "feat(core): button recogniser for short press and hold"
 ```
 
 ---
@@ -1049,7 +1049,7 @@ Expected: PASS, 24 testy (7 + 7 + 10).
 
 ```bash
 git add Sources/TrikiMuteCore/MeetScripts.swift Sources/TrikiMuteCore/MeetController.swift Tests/TrikiMuteCoreTests/MeetControllerTests.swift
-git commit -m "feat(core): skrypty sterujace Meet i kontroler z wykonawca wymiennym"
+git commit -m "feat(core): Meet control scripts and controller with pluggable runner"
 ```
 
 ---
@@ -1185,7 +1185,7 @@ W Ustawieniach systemowych, `Prywatność i ochrona → Automatyzacja`, odbierz 
 
 ```bash
 git add Sources/TrikiMute
-git commit -m "feat: wykonawca AppleScript, kolejnosc przegladarek i reczny test sterowania Meet"
+git commit -m "feat(app): AppleScript runner, browser ordering and manual Meet test"
 ```
 
 ---
@@ -1488,7 +1488,7 @@ Zostaw Kapsel nieruchomo na biurku na 5 minut przy otwartej rozmowie. Oczekiwane
 
 ```bash
 git add Sources/TrikiMute
-git commit -m "feat: polaczenie z Kapslem, model Uzbrojenia i spiecie przycisku z Meet"
+git commit -m "feat(app): device connection, arming model and button-to-Meet wiring"
 ```
 
 ---
@@ -1694,7 +1694,7 @@ Oczekiwane:
 
 ```bash
 git add Sources/TrikiMute
-git commit -m "feat: AppState jako jedyne zrodlo prawdy i pelne menu w pasku"
+git commit -m "feat(app): AppState as single source of truth and full menu"
 ```
 
 ---
@@ -1777,7 +1777,7 @@ Wywołaj po kolei trzy sytuacje i potwierdź, że każda brzmi inaczej:
 
 ```bash
 git add Sources/TrikiMute
-git commit -m "feat: trzy rozroznialne sygnaly dzwiekowe potwierdzajace wynik Akcji"
+git commit -m "feat(app): three distinct sound cues confirming action outcome"
 ```
 
 ---
@@ -1921,7 +1921,7 @@ Expected: PASS, 24 testy.
 
 ```bash
 git add Sources/TrikiMute README.md
-git commit -m "feat: uruchamianie przy logowaniu i dokumentacja projektu"
+git commit -m "feat(app): launch at login and project documentation"
 ```
 
 ---
