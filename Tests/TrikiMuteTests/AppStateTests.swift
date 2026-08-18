@@ -206,17 +206,19 @@ private final class TestQueue: ScriptQueue {
 // MARK: - Injected browser order
 
 /// Mutation check for `docs/follow-ups.md`'s "Zrobione" entry on this exact
-/// point: `testBrowserInstances` above is identical to `BrowserOrdering.supported`,
-/// which is also what `RunningBrowsers.instances()` falls back to whenever no
-/// listed browser is running — so every test in this file that passes
-/// `testBrowserInstances` would keep passing even if a call site were
-/// reverted to call `RunningBrowsers.instances()` directly and the injected
-/// `browserInstances` parameter went unused, in any environment without a
-/// browser forcibly running. This test uses a *reversed* list instead —
-/// genuinely different from `BrowserOrdering.supported` — and asserts on
-/// `ProbeResult.browser`, a value that can only come out reversed if
-/// `refreshTarget()` is actually calling the injected closure rather than
-/// reading `NSWorkspace` on its own.
+/// point: `testBrowserInstances` above happens to be in the same order as
+/// `BrowserOrdering.supported` — both list Chrome before Brave — so a test
+/// that only checks *which* browsers are searched, without checking the
+/// order the search visits them in, would keep passing even if a call site
+/// were reverted to call `RunningBrowsers.instances()` directly (which, with
+/// no browser actually running, returns an empty list — not a fallback to
+/// `supported` — but an *empty* injected list would fail loudly, so a
+/// same-order stand-in is the sneaky case worth guarding against) and the
+/// injected `browserInstances` parameter went unused. This test uses a
+/// *reversed* list instead — genuinely different from `BrowserOrdering.supported`
+/// — and asserts on `ProbeResult.browser`, a value that can only come out
+/// reversed if `refreshTarget()` is actually calling the injected closure
+/// rather than reading `NSWorkspace` on its own.
 ///
 /// Verified the honest way (manual, not automated): temporarily changed
 /// `refreshTarget()`'s `let instances = browserInstances()` to

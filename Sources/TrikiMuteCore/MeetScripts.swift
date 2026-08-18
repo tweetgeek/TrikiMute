@@ -75,7 +75,7 @@ public enum MeetScripts {
                 if it is not running then return "NONE"
                 repeat with w in windows
                     repeat with t in tabs of w
-                        if URL of t contains "meet.google.com" then
+                        if URL of t contains "\(meetHost)" then
                             set result to execute t javascript "\(escaped(javascript))"
                             if result is not "NONE" then return result
                         end if

@@ -81,6 +81,16 @@ final class AppState {
     /// Production default is `RunningBrowsers.instances()`, called
     /// synchronously at each call site, on the main thread, before dispatching
     /// to `scriptQueue`.
+    ///
+    /// The closure type itself carries `@MainActor`, not just the call sites
+    /// that happen to invoke it there: parameter default expressions don't
+    /// inherit the initializer's isolation (the same quirk the `connection`
+    /// parameter's comment documents below), so the default-value closure
+    /// literal — `{ RunningBrowsers.instances() }` — has to be constructible
+    /// outside `init`'s `@MainActor` context. Annotating the type is what
+    /// makes that possible while still having the compiler enforce that the
+    /// closure is only ever *called* on the main actor, a rule that
+    /// previously lived only in the comment above.
     private let browserInstances: @MainActor () -> [BrowserInstance]
     private var probeTimer: Timer?
     private var probeInFlight = false

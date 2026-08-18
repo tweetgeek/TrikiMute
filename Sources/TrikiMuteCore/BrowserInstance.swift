@@ -56,8 +56,15 @@ public enum BrowserOrdering {
         _ instances: [BrowserInstance],
         supported: [SupportedBrowser]
     ) -> [BrowserInstance] {
+        // `uniquingKeysWith:` rather than `uniqueKeysWithValues:`: this is a
+        // public function, and a crash is a poor failure mode for something
+        // whose whole job is determinism. `supported` having a duplicated
+        // `bundleID` is unreachable from today's call sites, but if it ever
+        // happened, keeping the first (lowest, i.e. most-preferred) rank is
+        // the same tie-break this function already applies elsewhere.
         let rank = Dictionary(
-            uniqueKeysWithValues: supported.enumerated().map { ($1.bundleID, $0) }
+            supported.enumerated().map { ($1.bundleID, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         return instances.sorted { left, right in
             if left.isActive != right.isActive { return left.isActive }
