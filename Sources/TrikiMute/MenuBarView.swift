@@ -58,19 +58,23 @@ struct MenuBarView: View {
 
     /// Pairing lives entirely in one place in the menu — this switches on
     /// `AppState.pairing` and renders whichever step is current. "Uśpij
-    /// Kapsel" and "Zapomnij Kapsel" both sit next to the pairing button, in
-    /// the same `.inactive` case — all three are device-lifecycle actions,
-    /// not call actions like toggling the microphone, so they belong here
-    /// rather than up with "Przełącz mikrofon"/"Przełącz kamerę". Order
-    /// follows how often each is actually used: pairing first (common —
-    /// first setup, or swapping to a different capsule), then sleeping
-    /// (occasional — someone remembers right after a call ends and doesn't
-    /// want to wait out `AppState.idleTimeout`), then forgetting last
-    /// (destructive and rare). Sleeping and forgetting answer different
-    /// questions — pairing *replaces* the saved device, sleeping
-    /// *disconnects* it without touching what's saved, forgetting *removes*
-    /// it with nothing to replace it — so three different buttons instead of
-    /// collapsing any two together.
+    /// Kapsel", its cancel counterpart, and "Zapomnij Kapsel" all sit next
+    /// to the pairing button, in the same `.inactive` case — all are
+    /// device-lifecycle actions, not call actions like toggling the
+    /// microphone, so they belong here rather than up with "Przełącz
+    /// mikrofon"/"Przełącz kamerę". Order follows how often each is actually
+    /// used: pairing first (common — first setup, or swapping to a
+    /// different capsule), then sleeping/its cancel (occasional), then
+    /// forgetting last (destructive and rare). "Uśpij Kapsel" and its cancel
+    /// never show at the same time — `deviceState` is never both `.armed`
+    /// and `.fallingAsleep` — so putting the cancel in the same slot right
+    /// after "Uśpij Kapsel" reuses the exact spot the user's pointer is
+    /// already at after a misclick, without adding permanent clutter for
+    /// everyone else. Sleeping and forgetting answer different questions —
+    /// pairing *replaces* the saved device, sleeping *disconnects* it
+    /// without touching what's saved, forgetting *removes* it with nothing
+    /// to replace it — so separate buttons instead of collapsing any two
+    /// together.
     @ViewBuilder
     private var pairingSection: some View {
         switch state.pairing {
@@ -96,6 +100,25 @@ struct MenuBarView: View {
                     state.sleepDevice()
                 } label: {
                     Label("Uśpij Kapsel", systemImage: "moon.zzz.fill")
+                }
+            }
+            // The rescue for "Uśpij Kapsel" clicked by accident (or for the
+            // automatic idle disconnect landing here on its own — both
+            // triggers reach the identical `.fallingAsleep` state, so one
+            // button cancels either). Without this there was no way out
+            // except waiting out the sleep wait — roughly three minutes for
+            // the device to actually go quiet, or worse if a reflexive press
+            // on the physical button kept it advertising instead. "Anuluj
+            // usypianie" pairs with "Uśpij Kapsel" the same way "Anuluj
+            // parowanie" pairs with "Paruj Kapsla" below — the wording names
+            // exactly what it undoes, not a new action — and shares that
+            // button's outline `xmark.circle`: reversible and cheap, same as
+            // cancelling pairing.
+            if state.deviceState == .fallingAsleep {
+                Button {
+                    state.cancelFallingAsleep()
+                } label: {
+                    Label("Anuluj usypianie", systemImage: "xmark.circle")
                 }
             }
             // Only meaningful — and only shown — when there's actually

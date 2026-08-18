@@ -190,7 +190,7 @@ final class TrikiConnection: NSObject {
     /// `guard pairing == nil` never blocks the (already-inert) call at the
     /// end of this method.
     func forget() {
-        cancelSleepWait()
+        abandonSleepWait()
         UserDefaults.standard.removeObject(forKey: Self.knownDeviceKey)
         if pairing != nil {
             central.stopScan()
@@ -275,7 +275,7 @@ final class TrikiConnection: NSObject {
     @discardableResult
     func startPairing() -> Bool {
         guard central?.state == .poweredOn, pairing == nil else { return false }
-        cancelSleepWait()
+        abandonSleepWait()
         pairing = PairingSession()
         central.scanForPeripherals(withServices: nil, options: nil)
         return true
@@ -406,6 +406,32 @@ final class TrikiConnection: NSObject {
     // package-visible method — the same pattern `AppState`'s
     // `checkXDeadline()` methods use — so `TrikiConnectionTests` can drive
     // the whole wait deterministically.
+    //
+    // **Cancelling early ("Anuluj usypianie").** A misclick on "Uśpij
+    // Kapsel" used to be a three-to-four-and-a-half-minute trap: the earliest
+    // exit was `sleepWaitCap`, and a reflexive press on the physical button
+    // — the obvious way anyone would try to "undo" a sleeping device — only
+    // made it worse, since it keeps the device advertising and defeats
+    // `.deviceIsGone`, leaving the cap as the only way out. `cancelSleepWait()`
+    // (public) is the deliberate fix: it can re-arm immediately, without
+    // waiting for anything, because the device is still advertising
+    // throughout the wait — that premise is the whole reason the wait exists
+    // at all. It reuses `concludeSleepWait()`, the exact teardown a normal
+    // conclusion already performs, so a cancelled wait lands in exactly the
+    // same `.searching` state a `.deviceIsGone`/`.capExpired` conclusion
+    // does — not a special one — and leaves no timer running to fire later
+    // against a device that has since reconnected.
+    //
+    // The cap's press-wins-eventually fallback is left in place deliberately,
+    // not replaced by the new cancel: it's the only escape for someone who
+    // presses the physical button out of reflex, or who never sees the menu
+    // at all (a different Mac, a moment away from the keyboard). The cancel
+    // button is the fast path for the common case; the cap remains the
+    // bound of last resort for everyone else. `abandonSleepWait()` (private,
+    // below) is a different, older operation: it tears the wait down for a
+    // caller that's about to start something else of its own (a fresh pairing
+    // scan, or `forget()`'s teardown) and does **not** re-arm — the caller
+    // takes over immediately, so there's nothing to reconnect to yet.
 
     /// Starts the wait for the saved device to actually stop advertising,
     /// following a deliberate disconnect — see the section doc above.
@@ -522,7 +548,14 @@ final class TrikiConnection: NSObject {
     /// whatever comes next on its own (a fresh scan for pairing,
     /// `resumeSearch()` finding nothing for `forget()` since the identifier
     /// is cleared before this runs). A no-op if no wait is active.
-    private func cancelSleepWait() {
+    ///
+    /// Deliberately distinct from the public `cancelSleepWait()` below: this
+    /// one does **not** re-arm the pending connect — the caller is about to
+    /// decide what comes next on its own (a fresh scan, or nothing at all
+    /// once `forget()` has cleared the saved identifier) — where the public
+    /// method's whole point is re-arming immediately, on the user's behalf,
+    /// with nothing else about to happen.
+    private func abandonSleepWait() {
         guard sleepWait != nil else { return }
         sleepWaitBurstEndTimer?.invalidate()
         sleepWaitBurstEndTimer = nil
@@ -533,6 +566,26 @@ final class TrikiConnection: NSObject {
         central.stopScan()
         sleepWait = nil
         onState?(.disconnected)
+    }
+
+    /// Cancels an in-progress sleep wait early, on user request, and re-arms
+    /// the pending connect immediately — the escape hatch for "Uśpij Kapsel"
+    /// clicked by accident, exposed in the menu as "Anuluj usypianie" (see
+    /// `AppState.cancelFallingAsleep()`). See the "Cancelling early" note in
+    /// this section's header comment for why immediate re-arming is safe
+    /// here specifically (the device is still advertising throughout the
+    /// wait) and why the cap's own press-wins-eventually fallback stays in
+    /// place alongside this rather than being replaced by it.
+    ///
+    /// Reuses `concludeSleepWait()` — the exact teardown+`resumeSearch()` a
+    /// `.deviceIsGone`/`.capExpired` conclusion already performs — so
+    /// cancelling lands on exactly the same `.searching` state a normal
+    /// conclusion reaches, not a special one, and leaves no burst or cap
+    /// timer running to fire later against a device that has since
+    /// reconnected. A no-op if no wait is active.
+    func cancelSleepWait() {
+        guard sleepWait != nil else { return }
+        concludeSleepWait()
     }
 
     /// Reacts to a Bluetooth power/authorization change. Split out from the

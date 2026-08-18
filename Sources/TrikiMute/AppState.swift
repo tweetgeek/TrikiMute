@@ -757,6 +757,38 @@ final class AppState {
         connection.disconnectIdle()
     }
 
+    /// Cancels the sleep wait early, on user request — the rescue for
+    /// "Uśpij Kapsel" clicked by accident (or for the automatic idle
+    /// disconnect, which lands on the identical `.fallingAsleep` state — see
+    /// `TrikiConnection.disconnectIdle()`'s doc comment on the two triggers
+    /// sharing one path). Without this, the only way out of `.fallingAsleep`
+    /// was to wait roughly three minutes for the device to actually go quiet
+    /// (or, worse, up to `sleepWaitCap` if a reflexive press on the physical
+    /// button kept it advertising) — a trap with a technical exit reachable
+    /// only after a delay nobody would accept.
+    ///
+    /// Menu-visible only while `deviceState == .fallingAsleep` (see
+    /// `MenuBarView`) — there is nothing to cancel otherwise: `.armed` means
+    /// no wait is running yet, `.disconnected`/`.searching` already means
+    /// the wait already concluded (or one was never entered), and `.error`
+    /// means the app isn't even connected. Guarded here too, defensively,
+    /// same posture as `sleepDevice()`.
+    ///
+    /// It's safe for this to take effect immediately, unlike the wait it
+    /// short-circuits: the device is still advertising throughout
+    /// `.fallingAsleep` (that's the entire premise the wait relies on), so
+    /// `connection.cancelSleepWait()` re-arming the pending connect right
+    /// away reconnects within moments — no button press required. It lands
+    /// the app on exactly the same `.searching` state an ordinary
+    /// conclusion of the wait (device confirmed gone, or the cap) reaches —
+    /// not a special one — so the menu reads exactly as it does after any
+    /// other cold start: "Szukam Kapsla — naciśnij przycisk, żeby go
+    /// obudzić."
+    func cancelFallingAsleep() {
+        guard deviceState == .fallingAsleep, pairing == .inactive else { return }
+        connection.cancelSleepWait()
+    }
+
     /// True while none of the pairing timers is currently scheduled. Exists
     /// solely for `AppStateTests` to confirm a teardown path didn't leave a
     /// timer running underneath a `pairing` value that has already moved past

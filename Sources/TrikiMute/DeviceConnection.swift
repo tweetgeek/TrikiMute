@@ -56,6 +56,18 @@ protocol DeviceConnection: AnyObject {
     /// request.
     func disconnectIdle()
 
+    /// Cancels an in-progress sleep wait early, on user request, and re-arms
+    /// the pending connect immediately instead of waiting for the device to
+    /// actually go quiet or for the wait's overall cap to expire. Exposed as
+    /// "Anuluj usypianie" in the menu (see `AppState.cancelFallingAsleep()`)
+    /// — the rescue for `disconnectIdle()` (either trigger) clicked or
+    /// reached by accident. Safe to act on immediately: the device is still
+    /// advertising throughout the wait, so re-arming here reconnects within
+    /// moments, no button press required. Lands on the same state an
+    /// ordinary conclusion of the wait reaches. A no-op if no wait is
+    /// active.
+    func cancelSleepWait()
+
     /// Enters discovery mode: scans and reports candidates via
     /// `onCandidates` instead of connecting to anything automatically. Does
     /// not touch the saved device identifier.

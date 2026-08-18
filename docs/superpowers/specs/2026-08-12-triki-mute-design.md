@@ -241,14 +241,48 @@ na razie nic nie zrobi"), zamiast dzielić go z tekstem stanu „szukam"
 faktycznie budzi urządzenie. Ikona paska menu współdzieli jednak symbol
 księżyca z „rozłączony"/„szukam" — rozróżnienie ma znaczenie dopiero po
 otwarciu menu, nie na pierwszy rzut oka. Stan `.fallingAsleep` da się opuścić
-tylko przez zakończenie oczekiwania (zniknięcie albo limit), rozpoczęcie
-nowego parowania, albo „Zapomnij Kapsel" — każde z nich jawnie anuluje
-oczekiwanie zamiast zostawiać je działające w tle.
+przez zakończenie oczekiwania (zniknięcie albo limit), przez jawne anulowanie
+(niżej), rozpoczęcie nowego parowania, albo „Zapomnij Kapsel" — każde z nich
+jawnie kończy oczekiwanie zamiast zostawiać je działające w tle.
 
 Po zakończeniu oczekiwania (zniknięciem albo limitem) aplikacja wznawia
 zawieszone `connect()` i pasek menu wraca do tekstu „Szukam Kapsla — naciśnij
 przycisk, żeby go obudzić", bo to dokładnie ten sam stan, w jakim aplikacja
 czeka na pierwsze uzbrojenie po starcie.
+
+**Anulowanie oczekiwania.** Bez jawnego anulowania stan `.fallingAsleep` był
+pułapką znalezioną ręcznie: przypadkowe kliknięcie „Uśpij Kapsel" nie dawało
+się cofnąć wcześniej niż po ok. trzech minutach (zauważone zniknięcie) albo,
+w gorszym razie, po całych 270 sekundach limitu — a odruchowa reakcja,
+naciśnięcie przycisku na samym Kapslu, tylko to pogarszała: podtrzymywała
+reklamowanie urządzenia, więc `.deviceIsGone` nigdy nie zapadało i oczekiwanie
+i tak kończył dopiero limit. Naprawa nie wymaga czekania: przez cały czas
+`.fallingAsleep` Kapsel wciąż się reklamuje (to właśnie ta własność stoi za
+całym oczekiwaniem), więc natychmiastowe wznowienie zawieszonego `connect()`
+łapie go z powrotem w ułamku sekundy, bez potrzeby naciskania przycisku.
+Pasek menu pokazuje w tym stanie pozycję „Anuluj usypianie" w dokładnie tym
+miejscu, gdzie chwilę wcześniej było „Uśpij Kapsel" — te dwie pozycje nigdy
+nie są widoczne jednocześnie (Kapsel nie bywa naraz uzbrojony i usypiający),
+więc wskaźnik użytkownika po przypadkowym kliknięciu zostaje dokładnie tam,
+gdzie już jest, bez trwałego bałaganu w menu dla nikogo innego. Nazwa pozycji
+celowo odzwierciedla, co unieważnia, tym samym wzorcem co „Anuluj parowanie"
+przy „Paruj Kapsla". Anulowanie kończy oczekiwanie identycznie jak zwykłe jego
+zakończenie — pasek menu wraca do „Szukam Kapsla — naciśnij przycisk, żeby go
+obudzić", nie do żadnego osobnego stanu — i zatrzymuje serie skanowania oraz
+nadrzędny limit na czysto, bez żywego zegara, który mógłby odpalić się później
+przeciwko już połączonemu urządzeniu. Dotyczy identycznie obu wyzwalaczy
+usypiania, bo `DeviceState.fallingAsleep` nie rozróżnia, który z nich
+zadziałał — rozłączenia z bezczynności też da się anulować tym samym
+przyciskiem, jeśli aplikacja zdąży wejść w ten stan, zanim ktoś wróci przed
+ekran.
+
+Limit `sleepWaitCap` (270 s) i jego efekt uboczny — naciśnięcie przycisku
+w trakcie usypiania mimo wszystko kończy się uzbrojeniem — zostają nietknięte,
+nie zastąpione jawnym anulowaniem: to jedyna droga wyjścia dla kogoś, kto
+odruchowo naciśnie fizyczny przycisk zamiast otworzyć menu, albo kto akurat
+nie widzi paska menu wcale (inny Mac, chwila z dala od klawiatury). Jawne
+anulowanie jest szybką ścieżką dla najczęstszego przypadku; limit zostaje
+ograniczeniem ostatniej szansy dla reszty.
 
 **Rozłączenie na żądanie.** To samo rozłączenie da się wywołać ręcznie
 z paska menu — pozycja „Uśpij Kapsel", widoczna wyłącznie gdy Kapsel jest
@@ -389,6 +423,10 @@ Rozwijane menu:
   łączenia, dla naciśnięć i dla całej próby); zawsze z opcją przerwania
 - „Uśpij Kapsel" — rozłącza uzbrojony Kapsel na żądanie zamiast czekać na
   rozłączenie z bezczynności; widoczne wyłącznie, gdy Kapsel jest uzbrojony
+- „Anuluj usypianie" — kończy oczekiwanie na zaśnięcie natychmiast i wznawia
+  zawieszone `connect()`, zamiast czekać na zniknięcie albo na `sleepWaitCap`;
+  widoczne w tym samym miejscu co „Uśpij Kapsel", wyłącznie w trakcie
+  `.fallingAsleep` — te dwie pozycje nigdy nie są widoczne jednocześnie
 - „Zapomnij Kapsel" — czyści zapamiętany identyfikator; widoczne wyłącznie,
   gdy jakiś jest zapisany
 - przełącznik „uruchamiaj przy logowaniu" (`SMAppService`)
@@ -470,6 +508,12 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   osobny test przypina samą równoważność — obie ścieżki (zegar i ręczna
   akcja) dają identyczną sekwencję `.fallingAsleep` → `.searching`, nie dwie
   niezależnie zachowujące się kopie
+- `AppState.cancelFallingAsleep()` — anulowanie oczekiwania: re-armuje
+  natychmiast, bez żadnego pośredniego zakończenia oczekiwania (na dowód, że
+  cofa się bez czekania na cokolwiek), działa identycznie niezależnie od tego,
+  który wyzwalacz (zegar bezczynności czy „Uśpij Kapsel") wprowadził stan
+  `.fallingAsleep`, jest bez efektu poza `.fallingAsleep`, i jest bez efektu
+  w trakcie parowania (ta sama defensywna postawa co `sleepDevice()`)
 - `SleepWait` — czysta logika oczekiwania na faktyczne zaśnięcie, bez
   CoreBluetooth i bez `@MainActor`: widzenie obserwowanego identyfikatora
   w trakcie serii nie kończy oczekiwania, koniec serii bez widzenia kończy
@@ -495,7 +539,14 @@ Testy jednostkowe, bez sprzętu i bez przeglądarki:
   zawieszonego połączenia — dowód pośredni przez `retrievePeripherals`
   (niewywołany, dopóki oczekiwanie trwa; wywołany raz, gdy się kończy), tym
   samym sposobem, jakim testy tego pliku już radzą sobie z brakiem
-  prawdziwego `CBPeripheral`. Nie obejmuje `CBPeripheral` — nie da się go
+  prawdziwego `CBPeripheral`. Tym samym dowodem przypięte jest
+  `cancelSleepWait()`: re-armuje natychmiast, w środku serii i nawet gdy
+  urządzenie jest akurat widziane (dokładnie ten przypadek, który odruchowe
+  naciśnięcie przycisku produkuje), jest bez efektu, gdy żadne oczekiwanie nie
+  trwa, i nie zostawia po sobie żywej serii ani limitu zdolnych wywołać drugie,
+  zbędne wznowienie później — spóźniony koniec serii, początek kolejnej albo
+  upływ limitu po anulowaniu muszą pozostać bez efektu. Nie obejmuje
+  `CBPeripheral` — nie da się go
   stworzyć poza CoreBluetooth — więc ścieżka przechowująca faktyczną
   tożsamość wybranego kandydata (oraz samo okablowanie
   `didDisconnectPeripheral` → `startSleepWait()`) zostaje testem ręcznym.

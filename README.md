@@ -55,6 +55,14 @@ Kapsel zasypia i budzi go dopiero naciśnięcie przycisku, więc **pierwsze
 naciśnięcie po przerwie tylko go uzbraja** — budzi urządzenie i zestawia
 połączenie, nie wywołując Akcji. Pasek menu pokazuje, kiedy Kapsel jest gotowy.
 
+Uzbrojony Kapsel można też uśpić ręcznie z paska menu („Uśpij Kapsel"), zamiast
+czekać na automatyczne rozłączenie z bezczynności (po 10 minutach bez
+rozmowy) — oszczędza to baterię, bo bez połączenia Kapsel przestaje nadawać
+i zasypia sam. Po rozłączeniu Kapsel jeszcze przez chwilę się reklamuje, więc
+pasek menu na krótko pokazuje „Kapsel zasypia", zanim wróci do zwykłego
+„Szukam Kapsla". Kliknięcie „Uśpij Kapsel" przez pomyłkę da się cofnąć od
+razu — w tym samym miejscu w menu pojawia się wtedy „Anuluj usypianie".
+
 Sterowanie Meet idzie przez Apple Events (`execute javascript in tab`), które
 działa na karcie nieaktywnej — dlatego akcja nie przenosi focusu. Wynik każdej
 Akcji potwierdza dźwięk: `Tink` gdy się udało, `Pop` gdy nie ma czego wyciszyć,

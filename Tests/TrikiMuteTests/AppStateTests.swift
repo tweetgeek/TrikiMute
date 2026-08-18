@@ -29,6 +29,7 @@ private final class FakeDeviceConnection: DeviceConnection {
     private(set) var confirmPairingCalled = false
     private(set) var forgetCalled = false
     private(set) var disconnectIdleCalled = false
+    private(set) var cancelSleepWaitCalled = false
     private(set) var chosenID: UUID?
 
     var startPairingCalled: Bool { startPairingCallCount > 0 }
@@ -79,6 +80,17 @@ private final class FakeDeviceConnection: DeviceConnection {
     /// an internal `TrikiConnection`/`SleepWait` detail this fake has no
     /// reason to model.
     func concludeSleepWait() {
+        onState?(.searching)
+    }
+
+    /// Mirrors the real `TrikiConnection.cancelSleepWait()`: re-arms the
+    /// pending connect immediately — no need for a test to call
+    /// `concludeSleepWait()` afterward, since the whole point of cancelling
+    /// is that it doesn't wait for anything. Lands on the identical
+    /// `.searching` state `concludeSleepWait()` does, matching the real
+    /// method's own "same ending as an ordinary conclusion" contract.
+    func cancelSleepWait() {
+        cancelSleepWaitCalled = true
         onState?(.searching)
     }
     @discardableResult
@@ -1408,5 +1420,118 @@ private func chooseAndArmCandidate(
 
     #expect(!connection.disconnectIdleCalled)
     #expect(state.deviceState == .armed)
+    #expect(state.pairing == .searching([]))
+}
+
+// MARK: - Cancelling the sleep wait early ("Anuluj usypianie")
+//
+// Without a cancel, `.fallingAsleep` was a trap: the only exits were waiting
+// out the sleep wait (roughly three minutes for the device to actually go
+// quiet) or, worse, its ~4.5 minute cap if a reflexive press on the physical
+// button kept the device advertising instead of letting it go quiet.
+// `cancelFallingAsleep()` re-arms immediately by delegating to
+// `connection.cancelSleepWait()` — these tests pin that it takes effect
+// without any intervening `concludeSleepWait()` call (the whole point:
+// nothing is waited on), that it's a no-op outside `.fallingAsleep`, and
+// that both triggers into `.fallingAsleep` — the idle timeout and the manual
+// "Uśpij Kapsel" — can be cancelled the identical way, since neither
+// `AppState` nor the menu distinguishes which one produced the state.
+
+/// The plain case: manual sleep, then cancel before the wait would ever
+/// conclude on its own. `state.deviceState` must already read `.searching`
+/// right after `cancelFallingAsleep()` returns — no `concludeSleepWait()`
+/// call needed, unlike the plain `sleepDevice()` tests above — because
+/// cancelling is defined as *not* waiting for anything.
+@Test @MainActor func cancelFallingAsleepReArmsImmediatelyWithoutWaitingForTheWaitToConclude() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    state.sleepDevice()
+    #expect(state.deviceState == .fallingAsleep)
+
+    state.cancelFallingAsleep()
+
+    #expect(connection.cancelSleepWaitCalled)
+    #expect(state.hasSavedDevice)
+    #expect(state.deviceState == .searching)
+}
+
+/// The automatic idle disconnect lands on the identical `.fallingAsleep`
+/// state as the manual action — `AppState` has no separate flag recording
+/// which trigger caused it — so cancelling must work exactly the same way
+/// here too, not just for the menu-driven trigger.
+@Test @MainActor func cancelFallingAsleepAlsoReArmsTheAutomaticIdleDisconnect() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let clock = FakeClock()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, now: { clock.now }, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.armed)
+    clock.now += AppState.idleTimeout + 1
+    state.checkIdleDeadline()
+    #expect(state.deviceState == .fallingAsleep)
+
+    state.cancelFallingAsleep()
+
+    #expect(connection.cancelSleepWaitCalled)
+    #expect(state.deviceState == .searching)
+}
+
+/// Nothing to cancel unless the app is actually mid-wait — this is the
+/// guard `MenuBarView` mirrors to decide whether "Anuluj usypianie" is even
+/// shown. Covers every other `DeviceState` the button must stay hidden (and
+/// harmless if somehow invoked) for.
+@Test @MainActor func cancelFallingAsleepIsANoOpWhenNotFallingAsleep() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    // Freshly constructed: .disconnected.
+    state.cancelFallingAsleep()
+    #expect(!connection.cancelSleepWaitCalled)
+    #expect(state.deviceState == .disconnected)
+
+    connection.onState?(.searching)
+    state.cancelFallingAsleep()
+    #expect(!connection.cancelSleepWaitCalled)
+    #expect(state.deviceState == .searching)
+
+    connection.onState?(.armed)
+    state.cancelFallingAsleep()
+    #expect(!connection.cancelSleepWaitCalled)
+    #expect(state.deviceState == .armed)
+}
+
+/// Defensive guard mirroring `sleepDeviceIsANoOpDuringPairing`: `.fallingAsleep`
+/// can't actually coexist with a live pairing phase in production (real
+/// `TrikiConnection.startPairing()` abandons any wait before pairing's own
+/// scan begins), but `cancelFallingAsleep()` itself must not depend on a
+/// caller enforcing that.
+@Test @MainActor func cancelFallingAsleepIsANoOpDuringPairing() {
+    let connection = FakeDeviceConnection()
+    connection.hasSavedDevice = true
+    let controller = MeetController(runner: FakeRunner([]))
+    let queue = TestQueue()
+    let state = AppState(connection: connection, controller: controller, scriptQueue: queue, browserOrder: { testBrowserOrder })
+
+    connection.onState?(.fallingAsleep)
+    state.startPairing()
+    guard case .searching = state.pairing else {
+        Issue.record("expected .searching once startPairing() succeeds")
+        return
+    }
+
+    state.cancelFallingAsleep()
+
+    #expect(!connection.cancelSleepWaitCalled)
+    #expect(state.deviceState == .fallingAsleep)
     #expect(state.pairing == .searching([]))
 }

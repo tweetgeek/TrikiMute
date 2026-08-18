@@ -499,3 +499,89 @@ private func withSavedDeviceIdentifier(_ uuid: UUID?, _ body: () -> Void) {
         #expect(central.retrievePeripheralsCallCount == 0)
     }
 }
+
+// MARK: - Cancelling the sleep wait early: `cancelSleepWait()` — the
+// escape hatch for "Uśpij Kapsel" clicked by accident. Distinct from
+// `startingPairingDuringTheWaitCancelsIt`/`forgettingDuringTheWaitCancelsIt`
+// above: those two abandon the wait because something else is about to take
+// over (a fresh scan, or nothing at all once `forget()` clears the saved
+// identifier) and deliberately do *not* re-arm. `cancelSleepWait()` exists
+// specifically to re-arm, on the spot, with nothing else about to happen.
+
+/// The core behavior: cancelling mid-wait — before any burst has concluded,
+/// before the cap has fired — re-arms the pending connect immediately.
+/// `retrievePeripheralsCallCount` is this file's established proxy for "a
+/// reconnect was attempted" (see the section header above this one).
+@Test @MainActor func cancellingMidWaitReArmsImmediatelyWithoutWaitingForABurstOrTheCap() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+        connection.startSleepWait()
+        #expect(central.retrievePeripheralsCallCount == 0)
+
+        connection.cancelSleepWait()
+
+        #expect(central.retrievePeripheralsCallCount == 1)
+        // The scan invariant holds: cancelling stops the burst's scan, same
+        // as an ordinary conclusion does.
+        #expect(central.stopScanCallCount == 1)
+    }
+}
+
+/// Cancelling must also work while the device is actively being sighted —
+/// exactly the case a reflexive button press produces, which is the whole
+/// point: a press keeps the device advertising and so never reaches
+/// `.deviceIsGone` on its own, but an explicit cancel must not care either
+/// way.
+@Test @MainActor func cancellingWhileDeviceIsStillBeingSightedStillReArmsImmediately() {
+    let savedID = UUID()
+    withSavedDeviceIdentifier(savedID) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+        connection.startSleepWait()
+        connection.handleSleepWaitSighting(identifier: savedID)
+
+        connection.cancelSleepWait()
+
+        #expect(central.retrievePeripheralsCallCount == 1)
+    }
+}
+
+/// Cancelling with no wait active — nothing to cancel — must be harmless: no
+/// stray reconnect attempt for a device that was never being watched.
+@Test @MainActor func cancelSleepWaitWithNoActiveWaitIsHarmless() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+
+        connection.cancelSleepWait()
+
+        #expect(central.retrievePeripheralsCallCount == 0)
+        #expect(central.stopScanCallCount == 0)
+    }
+}
+
+/// Cancelling must leave no burst or cap timer able to fire later against a
+/// device that has, by then, already reconnected — mirrors
+/// `onceConcludedFurtherTicksDoNotIssueASecondPendingConnect` above, but for
+/// the cancel path specifically: a stray `endSleepWaitBurst()`,
+/// `beginSleepWaitBurst()`, or `checkSleepWaitCapDeadline()` call arriving
+/// after cancellation (the real-world equivalent of one of the three Timers
+/// this orchestration owns firing late) must not issue a second, redundant
+/// reconnect attempt.
+@Test @MainActor func cancellingLeavesNoTimerAbleToFireASecondPendingConnectLater() {
+    withSavedDeviceIdentifier(UUID()) {
+        let central = FakeCentralManaging(state: .poweredOn)
+        let connection = TrikiConnection(central: central)
+        connection.startSleepWait()
+
+        connection.cancelSleepWait()
+        #expect(central.retrievePeripheralsCallCount == 1)
+
+        connection.endSleepWaitBurst()
+        connection.beginSleepWaitBurst()
+        connection.checkSleepWaitCapDeadline()
+
+        #expect(central.retrievePeripheralsCallCount == 1)
+    }
+}
